@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS piece_stages (
 CREATE TABLE IF NOT EXISTS outsourcing (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   batch_no TEXT UNIQUE NOT NULL,
-  type TEXT NOT NULL CHECK(type IN ('cnc','grinding','plating')),
+  type TEXT NOT NULL,
   vendor_id INTEGER NOT NULL REFERENCES vendors(id),
   sent_date TEXT NOT NULL,
   expected_date TEXT,
@@ -184,7 +184,7 @@ rebuildTable('vendors', `CREATE TABLE vendors (
 rebuildTable('outsourcing', `CREATE TABLE outsourcing (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   batch_no TEXT UNIQUE NOT NULL,
-  type TEXT NOT NULL CHECK(type IN ('cnc','grinding','plating')),
+  type TEXT NOT NULL,
   vendor_id INTEGER NOT NULL REFERENCES vendors(id),
   sent_date TEXT NOT NULL,
   expected_date TEXT,
@@ -192,7 +192,13 @@ rebuildTable('outsourcing', `CREATE TABLE outsourcing (
   status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','open','done')),
   created_by INTEGER REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-)`, sql => !sql.includes("'grinding'") || !sql.includes("'draft'"));
+)`, sql => sql.includes('CHECK(type IN') || !sql.includes("'draft'"));
+
+for (const colDef of ['note TEXT', 'flag TEXT', 'flag_note TEXT', 'flag_date TEXT', 'flag_by INTEGER']) {
+  try { db.exec(`ALTER TABLE pieces ADD COLUMN ${colDef}`); } catch { /* 列已存在 */ }
+}
+db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('stall_warn_days', '2')`).run();
+db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('stall_alert_days', '4')`).run();
 db.exec(`UPDATE orders SET voided_at = datetime('now','localtime') WHERE status = 'void' AND voided_at IS NULL`);
 
 export function hashPassword(password) {

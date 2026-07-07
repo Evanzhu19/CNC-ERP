@@ -50,14 +50,22 @@ basicsRouter.post('/me/password', (req, res) => {
 basicsRouter.get('/settings', (req, res) => {
   res.json({
     company_name: getSetting('company_name') || '',
-    has_logo: !!getSetting('logo_file')
+    has_logo: !!getSetting('logo_file'),
+    stall_warn_days: Number(getSetting('stall_warn_days')) || 2,
+    stall_alert_days: Number(getSetting('stall_alert_days')) || 4
   });
 });
 
 basicsRouter.put('/settings', requireRole('admin', 'cnc_manager'), (req, res) => {
-  const { company_name } = req.body || {};
+  const { company_name, stall_warn_days, stall_alert_days } = req.body || {};
   if (!company_name || !String(company_name).trim()) return res.status(400).json({ error: '公司名称不能为空' });
+  const warn = Number(stall_warn_days);
+  const alert = Number(stall_alert_days);
+  if (!Number.isInteger(warn) || warn < 1 || warn > 60) return res.status(400).json({ error: '提示天数需为1-60的整数' });
+  if (!Number.isInteger(alert) || alert < warn || alert > 90) return res.status(400).json({ error: '报警天数需≥提示天数且不超过90' });
   setSetting('company_name', String(company_name).trim());
+  setSetting('stall_warn_days', String(warn));
+  setSetting('stall_alert_days', String(alert));
   res.json({ ok: true });
 });
 
@@ -138,7 +146,7 @@ basicsRouter.get('/vendors', (req, res) => {
 });
 
 function normVendorTypes(input) {
-  const valid = ['cnc', 'grinding', 'plating', 'other'];
+  const valid = ['milling', 'cnc', 'grinding', 'plating', 'other'];
   const arr = Array.isArray(input) ? input : String(input || '').split(',');
   const set = [...new Set(arr.map(s => String(s).trim()).filter(Boolean))];
   if (!set.length || set.some(t => !valid.includes(t))) return null;

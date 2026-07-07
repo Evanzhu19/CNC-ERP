@@ -11,7 +11,7 @@
         <el-option v-for="c in customers" :key="c.id" :label="c.name" :value="c.id" />
       </el-select>
       <el-date-picker v-model="filters.month" type="month" placeholder="下单月份" format="YYYY-MM" value-format="YYYY-MM" style="width: 140px" @change="load" />
-      <el-input v-model="filters.q" placeholder="订单号 / 客户PO / 编号 / 图号" style="width: 240px" clearable @keyup.enter="load" @clear="load" />
+      <el-input v-model="filters.q" placeholder="订单号/客户PO/编号/图号/规格/品名/板件号" style="width: 280px" clearable @keyup.enter="load" @clear="load" />
       <el-button @click="load">查询</el-button>
       <div style="flex: 1"></div>
       <el-button v-if="entry" type="success" plain @click="openExcelImport">Excel批量导入</el-button>
@@ -33,6 +33,9 @@
           <span class="prog">铣{{ row.milling || 0 }} · C{{ row.cnc || 0 }} · 磨{{ row.grinding || 0 }} · 镀回{{ row.plating_back || 0 }} · 出{{ row.shipped || 0 }} / {{ row.total || 0 }}</span>
           <el-tag v-if="row.wip_now" type="primary" size="small" style="margin-left: 6px">加工中{{ row.wip_now }}件</el-tag>
           <el-tag v-if="row.out_now" type="warning" size="small" style="margin-left: 4px">在外{{ row.out_now }}件</el-tag>
+          <el-tag v-if="row.flagged_now" size="small" class="tag-special" style="margin-left: 4px">特殊{{ row.flagged_now }}件</el-tag>
+          <el-tag v-if="row.status === 'active' && row.stall_alert_count" type="danger" size="small" effect="dark" style="margin-left: 4px">滞留{{ row.stall_alert_count }}件</el-tag>
+          <el-tag v-else-if="row.status === 'active' && row.stall_warn_count" type="warning" size="small" effect="dark" style="margin-left: 4px">滞留{{ row.stall_warn_count }}件</el-tag>
         </template>
       </el-table-column>
       <el-table-column v-if="showPrice" label="金额" width="120" align="right">
@@ -242,4 +245,5 @@ onMounted(async () => {
 <style scoped>
 .toolbar { display: flex; gap: 8px; margin-bottom: 14px; align-items: center; }
 .prog { color: #606266; font-size: 13px; }
+.tag-special { background: #f3eefc !important; border-color: #b39ddb !important; color: #6a3fb5 !important; }
 </style>

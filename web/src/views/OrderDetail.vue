@@ -47,62 +47,52 @@
           <template v-if="entry && detail.order.status !== 'void'">
             <el-button size="small" color="#409eff" plain :disabled="!selected.length" @click="openStart">开工</el-button>
             <el-button size="small" type="primary" :disabled="!selected.length" @click="openProgress">报工</el-button>
-            <el-button size="small" :disabled="!selected.length" @click="openOutsource('cnc')">CNC外发</el-button>
-            <el-button size="small" :disabled="!selected.length" @click="openOutsource('grinding')">精磨外发</el-button>
+            <el-button size="small" :disabled="!selected.length" @click="openOutsource('work')">加工外发</el-button>
             <el-button size="small" :disabled="!selected.length" @click="openOutsource('plating')">电镀外发</el-button>
             <el-button size="small" type="success" :disabled="!selected.length" @click="openShip">出货</el-button>
+            <el-button size="small" color="#7b52c7" plain :disabled="!selected.length" @click="openFlag">特殊状态</el-button>
             <el-button size="small" type="danger" plain :disabled="!selected.length" @click="openUndo">撤销工序</el-button>
           </template>
         </div>
       </template>
 
-      <el-table :data="pieceRows" border size="small" @selection-change="s => selected = s" row-key="id">
+      <el-table :data="pieceRows" border size="small" @selection-change="s => selected = s" row-key="id" :row-class-name="stallRowClass">
         <el-table-column type="selection" width="40" :selectable="() => entry && detail.order.status !== 'void'" reserve-selection />
         <el-table-column label="板件号" width="130" fixed>
           <template #default="{ row }">
             <a href="javascript:;" style="color:#409eff; text-decoration:none" @click.stop="openTimeline(row)">{{ row.piece_code }}</a>
           </template>
         </el-table-column>
-        <el-table-column prop="part_no" label="编号" width="100" show-overflow-tooltip />
+        <el-table-column prop="part_no" label="编号" width="90" show-overflow-tooltip />
         <el-table-column prop="drawing_no" label="图号" width="110" show-overflow-tooltip />
-        <el-table-column prop="item_name" label="品名" width="110" show-overflow-tooltip />
-        <el-table-column prop="spec" label="规格" width="140" show-overflow-tooltip />
-        <el-table-column prop="material" label="材质" width="90" show-overflow-tooltip />
-        <el-table-column label="铣磨" width="100" align="center">
-          <template #default="{ row }"><span class="done" v-if="row.stages.milling">{{ row.stages.milling.done_date.slice(5) }}</span><span v-else class="pending">—</span></template>
-        </el-table-column>
-        <el-table-column label="CNC" width="110" align="center">
+        <el-table-column prop="item_name" label="品名" width="100" show-overflow-tooltip />
+        <el-table-column prop="spec" label="规格" width="120" show-overflow-tooltip />
+        <el-table-column prop="material" label="材质" width="70" show-overflow-tooltip />
+        <el-table-column v-for="proc in ['milling', 'cnc', 'grinding']" :key="proc"
+          :label="{ milling: '铣磨', cnc: 'CNC', grinding: '精磨' }[proc]" width="96" align="center">
           <template #default="{ row }">
-            <el-tooltip v-if="row.cncOut" :content="`外发单 ${row.cncOut.batch_no}：${row.cncOut.vendor_name}${row.cncOut.note ? '（' + row.cncOut.note + '）' : ''}`">
-              <el-tag type="warning" size="small" :effect="row.cncOut.status === 'draft' ? 'plain' : 'light'">{{ row.cncOut.status === 'draft' ? '待确认' : '外发中' }}</el-tag>
+            <el-tooltip v-if="row.outNow && String(row.outNow.type).split(',').includes(proc)"
+              :content="`外发单 ${row.outNow.batch_no}：${row.outNow.vendor_name}${row.outNow.note ? '（' + row.outNow.note + '）' : ''}`">
+              <el-tag type="warning" size="small" :effect="row.outNow.status === 'draft' ? 'plain' : 'light'">{{ row.outNow.status === 'draft' ? '待确认' : '外发中' }}</el-tag>
             </el-tooltip>
-            <el-tooltip v-else-if="row.stages.cnc" :content="row.stages.cnc.note || 'CNC完成'">
-              <span class="done">{{ row.stages.cnc.done_date.slice(5) }}</span>
+            <el-tooltip v-else-if="row.stages[proc]" :content="row.stages[proc].note || '本厂完成'">
+              <span class="done">{{ row.stages[proc].done_date.slice(5) }}<sup v-if="isExt(row, proc)" class="ext">外</sup></span>
             </el-tooltip>
             <span v-else class="pending">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="精磨" width="100" align="center">
+        <el-table-column label="电镀" width="106" align="center">
           <template #default="{ row }">
-            <el-tooltip v-if="row.grindOut" :content="`外发单 ${row.grindOut.batch_no}：${row.grindOut.vendor_name}`">
-              <el-tag type="warning" size="small" :effect="row.grindOut.status === 'draft' ? 'plain' : 'light'">{{ row.grindOut.status === 'draft' ? '待确认' : '外发中' }}</el-tag>
+            <el-tooltip v-if="row.outNow && String(row.outNow.type).includes('plating')" :content="`外发单 ${row.outNow.batch_no}：${row.outNow.vendor_name}`">
+              <el-tag type="warning" size="small" :effect="row.outNow.status === 'draft' ? 'plain' : 'light'">{{ row.outNow.status === 'draft' ? '待确认' : '电镀中' }}</el-tag>
             </el-tooltip>
-            <el-tooltip v-else-if="row.stages.grinding" :content="row.stages.grinding.note || '精磨完成'">
-              <span class="done">{{ row.stages.grinding.done_date.slice(5) }}</span>
+            <el-tooltip v-else-if="row.stages.plating_back" :content="row.stages.plating_back.note || ''">
+              <span class="done">回 {{ row.stages.plating_back.done_date.slice(5) }}</span>
             </el-tooltip>
             <span v-else class="pending">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="电镀" width="120" align="center">
-          <template #default="{ row }">
-            <el-tooltip v-if="row.platingOut" :content="`外发单 ${row.platingOut.batch_no}：${row.platingOut.vendor_name}`">
-              <el-tag type="warning" size="small" :effect="row.platingOut.status === 'draft' ? 'plain' : 'light'">{{ row.platingOut.status === 'draft' ? '待确认' : '电镀中' }}</el-tag>
-            </el-tooltip>
-            <span v-else-if="row.stages.plating_back" class="done">回 {{ row.stages.plating_back.done_date.slice(5) }}</span>
-            <span v-else class="pending">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="出货" width="110" align="center">
+        <el-table-column label="出货" width="96" align="center">
           <template #default="{ row }">
             <el-tooltip v-if="row.stages.shipped" :content="row.stages.shipped.note || ''">
               <span class="done">{{ row.stages.shipped.done_date.slice(5) }}</span>
@@ -110,12 +100,34 @@
             <span v-else class="pending">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="当前状态" min-width="140">
+        <el-table-column label="当前状态" min-width="150">
           <template #default="{ row }">
-            <el-tooltip v-if="row.statusTag.wip" :content="`开工日期 ${row.wip_date}${row.wip_note ? '，' + row.wip_note : ''}`">
+            <el-tooltip v-if="row.statusTag.special" :content="`${row.flag_date || ''} 标记${row.flag_note ? '：' + row.flag_note : ''}`">
+              <el-tag size="small" class="tag-special">{{ row.statusTag.label }}</el-tag>
+            </el-tooltip>
+            <el-tooltip v-else-if="row.statusTag.wip" :content="`开工日期 ${row.wip_date}${row.wip_note ? '，' + row.wip_note : ''}`">
               <el-tag :type="row.statusTag.type" size="small" effect="dark">{{ row.statusTag.label }}</el-tag>
             </el-tooltip>
             <el-tag v-else :type="row.statusTag.type" size="small">{{ row.statusTag.label }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="滞留" width="72" align="center">
+          <template #default="{ row }">
+            <span v-if="row.stages.shipped" class="pending">—</span>
+            <b v-else-if="row.idle_days >= stallAlert" style="color:#f56c6c">{{ row.idle_days }}天</b>
+            <b v-else-if="row.idle_days >= stallWarn" style="color:#e6a23c">{{ row.idle_days }}天</b>
+            <span v-else style="color:#909399">{{ row.idle_days }}天</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="行备注" min-width="110" show-overflow-tooltip>
+          <template #default="{ row }"><span style="color:#606266">{{ row.item_remark || '—' }}</span></template>
+        </el-table-column>
+        <el-table-column label="件备注" min-width="110">
+          <template #default="{ row }">
+            <span style="color:#606266">{{ row.note || '' }}</span>
+            <el-button v-if="entry" text size="small" style="padding: 2px 4px" @click.stop="editNote(row)">
+              {{ row.note ? '改' : '+备注' }}
+            </el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -250,8 +262,16 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="outsourceDialog" :title="`${OUT_TITLES[outsourceForm.type]}（已选 ${selected.length} 件）`" width="480px">
+    <el-dialog v-model="outsourceDialog" :title="`${outsourceForm.kind === 'plating' ? '电镀外发' : '加工外发'}（已选 ${selected.length} 件）`" width="500px">
       <el-form label-width="90px">
+        <el-form-item v-if="outsourceForm.kind === 'work'" label="外发工序" required>
+          <el-checkbox-group v-model="outsourceForm.procs">
+            <el-checkbox value="milling">铣磨</el-checkbox>
+            <el-checkbox value="cnc">CNC</el-checkbox>
+            <el-checkbox value="grinding">精磨</el-checkbox>
+          </el-checkbox-group>
+          <div style="color:#909399; font-size:12px; width:100%">同一家厂连做几道就勾几道（须相邻，如CNC+精磨）；回货时勾选的工序都会自动标完成</div>
+        </el-form-item>
         <el-form-item label="外协厂家" required>
           <el-select v-model="outsourceForm.vendor_id" filterable style="width: 100%" placeholder="选择厂家">
             <el-option v-for="v in vendorOptions" :key="v.id" :label="v.name" :value="v.id" />
@@ -270,6 +290,27 @@
       <template #footer>
         <el-button @click="outsourceDialog = false">取消</el-button>
         <el-button type="primary" @click="submitOutsource">建外发单</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="flagDialog" :title="`特殊状态（已选 ${selected.length} 件）`" width="480px">
+      <el-form label-width="90px">
+        <el-form-item label="状态">
+          <el-radio-group v-model="flagForm.flag">
+            <el-radio-button value="repair">维修</el-radio-button>
+            <el-radio-button value="rework">返工</el-radio-button>
+            <el-radio-button value="redraw">改图</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="说明">
+          <el-input v-model="flagForm.note" placeholder="如：客户改孔位，等新图 / 边缘崩角返工" />
+        </el-form-item>
+        <el-alert type="info" :closable="false" title="标记期间该板禁止出货。要退工序（如返工重铣），用「撤销工序」逆序撤。处理完点下面「解除标记」恢复正常。" />
+      </el-form>
+      <template #footer>
+        <el-button v-if="selectedHasFlag" type="success" plain @click="submitFlag(null)">解除标记（恢复正常）</el-button>
+        <el-button @click="flagDialog = false">取消</el-button>
+        <el-button color="#7b52c7" style="color:#fff" @click="submitFlag(flagForm.flag)">打上标记</el-button>
       </template>
     </el-dialog>
 
@@ -294,7 +335,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { ArrowLeft } from '@element-plus/icons-vue';
 import { api, canSeePrice, canEntry, token, getUser } from '../api.js';
-import { ORDER_STATUS, pieceStatus } from '../consts.js';
+import { ORDER_STATUS, pieceStatus, outTypeLabel, PIECE_FLAGS } from '../consts.js';
 
 const route = useRoute();
 const router = useRouter();
@@ -337,13 +378,20 @@ function openTimeline(row) {
     });
   }
   for (const os of row.outsourcing || []) {
-    if (os.type === 'cnc' || os.type === 'grinding') {
+    if (!String(os.type).includes('plating')) {
       events.push({
-        date: os.sent_date, seq: os.type === 'cnc' ? 1.5 : 2.5,
-        label: `${os.type === 'cnc' ? 'CNC加工' : '精磨'}外发 → ${os.vendor_name}（${os.batch_no}）`, type: 'warning',
+        date: os.sent_date, seq: 2.5,
+        label: `${outTypeLabel(os.type)}外发 → ${os.vendor_name}（${os.batch_no}）`, type: 'warning',
         note: [os.note, os.expected_date ? `预计回厂 ${os.expected_date}` : ''].filter(Boolean).join('；')
       });
     }
+  }
+  if (row.flag) {
+    events.push({
+      date: row.flag_date || o.order_date, seq: 99,
+      label: `⚠ 特殊状态：${PIECE_FLAGS[row.flag] || row.flag}`, type: 'danger',
+      note: row.flag_note
+    });
   }
   events.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.seq - b.seq));
   timelineEvents.value = events;
@@ -377,9 +425,11 @@ async function clearWip() {
 }
 const undoDialog = ref(false);
 const undoStage = ref('milling');
-const OUT_TITLES = { cnc: 'CNC外发', grinding: '精磨外发', plating: '电镀外发' };
 const outsourceDialog = ref(false);
-const outsourceForm = ref({ type: 'cnc', vendor_id: null, sent_date: today, expected_date: null, note: '' });
+const outsourceForm = ref({ kind: 'work', procs: [], vendor_id: null, sent_date: today, expected_date: null, note: '' });
+const flagDialog = ref(false);
+const flagForm = ref({ flag: 'rework', note: '' });
+const selectedHasFlag = computed(() => selected.value.some(s => s.flag));
 const shipDialog = ref(false);
 const shipForm = ref({ ship_date: today, note: '' });
 
@@ -417,6 +467,9 @@ async function hardDelete() {
 const allPieces = computed(() => detail.value ? detail.value.items.flatMap(i => i.pieces) : []);
 const shippedCount = computed(() => allPieces.value.filter(p => p.stages.shipped).length);
 
+const stallWarn = ref(2);
+const stallAlert = ref(4);
+
 const pieceRows = computed(() => {
   if (!detail.value) return [];
   const rows = [];
@@ -426,10 +479,8 @@ const pieceRows = computed(() => {
       rows.push({
         ...p,
         part_no: it.part_no, drawing_no: it.drawing_no, item_name: it.name,
-        spec: it.spec, material: it.material,
-        cncOut: openOuts.find(o => o.type === 'cnc') || null,
-        grindOut: openOuts.find(o => o.type === 'grinding') || null,
-        platingOut: openOuts.find(o => o.type === 'plating') || null,
+        spec: it.spec, material: it.material, item_remark: it.remark,
+        outNow: openOuts[0] || null,
         statusTag: pieceStatus(p)
       });
     }
@@ -437,11 +488,25 @@ const pieceRows = computed(() => {
   return rows;
 });
 
+function isExt(row, proc) {
+  return (row.outsourcing || []).some(o => o.returned_date && String(o.type).split(',').includes(proc));
+}
+
+function stallRowClass({ row }) {
+  if (row.stages.shipped) return '';
+  if (row.idle_days >= stallAlert.value) return 'stall-alert';
+  if (row.idle_days >= stallWarn.value) return 'stall-warn';
+  return '';
+}
+
 const vendorOptions = computed(() =>
   vendors.value.filter(v => {
     if (!v.active) return false;
     const types = String(v.type).split(',');
-    return types.includes(outsourceForm.value.type) || types.includes('other');
+    if (types.includes('other')) return true;
+    const procs = outsourceForm.value.kind === 'plating' ? ['plating'] : outsourceForm.value.procs;
+    if (!procs.length) return false;
+    return procs.every(p => types.includes(p));
   })
 );
 
@@ -457,9 +522,29 @@ function ids() { return selected.value.map(s => s.id); }
 
 function openProgress() { progressForm.value = { stage: 'milling', done_date: today, note: '' }; progressDialog.value = true; }
 function openUndo() { undoDialog.value = true; }
-function openOutsource(type) {
-  outsourceForm.value = { type, vendor_id: null, sent_date: today, expected_date: null, note: '' };
+function openOutsource(kind) {
+  outsourceForm.value = { kind, procs: kind === 'work' ? ['cnc'] : [], vendor_id: null, sent_date: today, expected_date: null, note: '' };
   outsourceDialog.value = true;
+}
+
+function openFlag() {
+  flagForm.value = { flag: 'rework', note: '' };
+  flagDialog.value = true;
+}
+
+async function submitFlag(flag) {
+  await api.post('/pieces/flag', { piece_ids: ids(), flag, note: flagForm.value.note });
+  ElMessage.success(flag ? `已标记为「${PIECE_FLAGS[flag]}」` : '已解除标记');
+  flagDialog.value = false;
+  load();
+}
+
+async function editNote(row) {
+  const { value } = await ElMessageBox.prompt(`板件 ${row.piece_code} 的备注：`, '件备注', {
+    inputValue: row.note || '', inputPlaceholder: '写点这块板的具体情况', confirmButtonText: '保存'
+  });
+  await api.post('/pieces/note', { piece_id: row.id, note: value });
+  load();
 }
 function openShip() {
   const bad = selected.value.find(s => s.stages.shipped || s.cncOut || s.platingOut);
@@ -483,8 +568,15 @@ async function submitUndo() {
 }
 
 async function submitOutsource() {
-  if (!outsourceForm.value.vendor_id) return ElMessage.warning('请选择外协厂家');
-  const { data } = await api.post('/outsourcing', { piece_ids: ids(), ...outsourceForm.value });
+  const f = outsourceForm.value;
+  const order = ['milling', 'cnc', 'grinding'];
+  const type = f.kind === 'plating' ? 'plating' : order.filter(p => f.procs.includes(p)).join(',');
+  if (!type) return ElMessage.warning('请至少勾选一道外发工序');
+  if (!f.vendor_id) return ElMessage.warning('请选择外协厂家');
+  const { data } = await api.post('/outsourcing', {
+    piece_ids: ids(), type, vendor_id: f.vendor_id,
+    sent_date: f.sent_date, expected_date: f.expected_date, note: f.note
+  });
   ElMessage({ message: `外发单 ${data.batch_no} 已生成（待确认）。货实际发出后，请在打印页点「确认已外发」，板件才算在外。`, type: 'warning', duration: 6000 });
   outsourceDialog.value = false;
   await load();
@@ -533,12 +625,18 @@ async function setStatus(status) {
 
 onMounted(async () => {
   load();
-  const { data } = await api.get('/vendors');
+  const [{ data }, { data: s }] = await Promise.all([api.get('/vendors'), api.get('/settings')]);
   vendors.value = data.vendors;
+  stallWarn.value = s.stall_warn_days || 2;
+  stallAlert.value = s.stall_alert_days || 4;
 });
 </script>
 
 <style scoped>
 .done { color: #67c23a; font-size: 12px; }
 .pending { color: #dcdfe6; }
+.ext { color: #e6a23c; font-weight: bold; margin-left: 2px; font-size: 10px; }
+.tag-special { background: #f3eefc !important; border-color: #b39ddb !important; color: #6a3fb5 !important; }
+:deep(.stall-warn) td { background: #fdf6e3 !important; }
+:deep(.stall-alert) td { background: #fdeaea !important; }
 </style>

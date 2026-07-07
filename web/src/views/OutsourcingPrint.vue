@@ -24,7 +24,7 @@
         <div>
           <div>外协厂家：{{ data.batch.vendor_name }}</div>
           <div v-if="data.batch.vendor_contact">联系人：{{ data.batch.vendor_contact }}<span v-if="data.batch.vendor_phone">　电话：{{ data.batch.vendor_phone }}</span></div>
-          <div>加工内容：{{ { cnc: 'CNC加工', grinding: '精磨（磨床加工）', plating: '电镀（镀铬）' }[data.batch.type] || data.batch.type }}</div>
+          <div>加工内容：{{ String(data.batch.type).includes('plating') ? '电镀（镀铬）' : outTypeLabel(data.batch.type) }}</div>
         </div>
         <div>
           <div>外发单号：{{ data.batch.batch_no }}</div>
@@ -85,6 +85,7 @@ import { ref, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, token, canEntry } from '../api.js';
+import { outTypeLabel } from '../consts.js';
 
 const route = useRoute();
 const data = ref(null);

@@ -37,28 +37,30 @@
 
     <el-card shadow="never" style="margin-top: 16px;" v-if="data.stalled">
       <template #header>
-        <div style="display: flex; align-items: center;">
-          <span style="color: #f56c6c; font-weight: bold;">⚠ 停滞预警：超过 {{ data.stall_days }} 天没有任何动静的板件（不含在外发中的）</span>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span style="font-weight: bold;">⚠ 滞留监控：状态无变化 ≥{{ data.stall_warn_days }}天 <el-tag type="warning" size="small" effect="dark">提示</el-tag>，≥{{ data.stall_alert_days }}天 <el-tag type="danger" size="small" effect="dark">报警</el-tag>（含在外的板）</span>
+          <el-tag v-if="data.flagged_pieces" size="small" class="tag-special">特殊状态 {{ data.flagged_pieces }} 件</el-tag>
           <div style="flex: 1"></div>
-          <el-radio-group v-model="stallDays" size="small" @change="load">
-            <el-radio-button :value="7">7天</el-radio-button>
-            <el-radio-button :value="14">14天</el-radio-button>
-            <el-radio-button :value="30">30天</el-radio-button>
-          </el-radio-group>
+          <span style="color:#909399; font-size:12px">阈值在 客户与厂家→系统设置 里调</span>
         </div>
       </template>
-      <el-table :data="data.stalled" size="small" @row-click="r => $router.push(`/orders/${r.order_id}`)" style="cursor:pointer">
+      <el-table :data="data.stalled" size="small" @row-click="r => $router.push(`/orders/${r.order_id}`)" style="cursor:pointer"
+        :row-class-name="({ row }) => row.level === 'alert' ? 'stall-alert' : 'stall-warn'">
         <el-table-column prop="piece_code" label="板件号" width="130" />
         <el-table-column prop="order_no" label="订单号" width="100" />
-        <el-table-column prop="customer_name" label="客户" min-width="130" show-overflow-tooltip />
+        <el-table-column prop="customer_name" label="客户" min-width="120" show-overflow-tooltip />
         <el-table-column prop="item_name" label="品名" width="110" show-overflow-tooltip />
         <el-table-column prop="drawing_no" label="图号" width="110" show-overflow-tooltip />
-        <el-table-column prop="spec" label="规格" width="130" show-overflow-tooltip />
-        <el-table-column prop="next_stage" label="卡在" width="90">
-          <template #default="{ row }"><el-tag type="danger" size="small">{{ row.next_stage }}</el-tag></template>
+        <el-table-column prop="spec" label="规格" width="120" show-overflow-tooltip />
+        <el-table-column prop="next_stage" label="卡在" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-tag :type="row.level === 'alert' ? 'danger' : 'warning'" size="small">{{ row.next_stage }}</el-tag>
+          </template>
         </el-table-column>
-        <el-table-column prop="days_idle" label="没动静" width="90" align="center">
-          <template #default="{ row }"><b style="color:#f56c6c">{{ row.days_idle }} 天</b></template>
+        <el-table-column prop="days_idle" label="滞留" width="80" align="center">
+          <template #default="{ row }">
+            <b :style="{ color: row.level === 'alert' ? '#f56c6c' : '#e6a23c' }">{{ row.days_idle }} 天</b>
+          </template>
         </el-table-column>
         <el-table-column prop="due_date" label="交期" width="105">
           <template #default="{ row }">
@@ -66,7 +68,7 @@
           </template>
         </el-table-column>
       </el-table>
-      <el-empty v-if="!data.stalled.length" description="很好，没有被遗忘的板件" :image-size="50" />
+      <el-empty v-if="!data.stalled.length" description="很好，没有滞留的板件" :image-size="50" />
     </el-card>
 
     <el-card shadow="never" style="margin-top: 16px;">
@@ -93,22 +95,15 @@ import { ref, computed, onMounted } from 'vue';
 import { api } from '../api.js';
 
 const data = ref(null);
-const stallDays = ref(14);
 const today = new Date().toISOString().slice(0, 10);
 
 async function load() {
-  const { data: d } = await api.get('/dashboard', { params: { stall_days: stallDays.value } });
+  const { data: d } = await api.get('/dashboard');
   data.value = d;
 }
 
 const wip = computed(() => (data.value?.stages.total_pieces || 0) - (data.value?.stages.shipped || 0));
-const cncOut = computed(() => {
-  const rows = (data.value?.outsourcing_open || []).filter(o => o.type === 'cnc' || o.type === 'grinding');
-  return {
-    pieces: rows.reduce((s, r) => s + (r.pieces || 0), 0),
-    overdue_pieces: rows.reduce((s, r) => s + (r.overdue_pieces || 0), 0)
-  };
-});
+const cncOut = computed(() => data.value?.outsourcing_open.find(o => o.type === 'work') || { pieces: 0, overdue_pieces: 0 });
 const platingOut = computed(() => data.value?.outsourcing_open.find(o => o.type === 'plating') || { pieces: 0, overdue_pieces: 0 });
 
 const stageBars = computed(() => {
@@ -137,4 +132,7 @@ onMounted(load);
 .label { color: #909399; margin-top: 4px; }
 .overdue { color: #f56c6c; }
 .bar-label { margin-bottom: 6px; color: #606266; }
+.tag-special { background: #f3eefc !important; border-color: #b39ddb !important; color: #6a3fb5 !important; }
+:deep(.stall-warn) td { background: #fdf6e3 !important; }
+:deep(.stall-alert) td { background: #fdeaea !important; }
 </style>

@@ -63,6 +63,15 @@
               <div style="color:#909399; font-size:12px; margin-top:6px">会显示在外发交接单和送货单的抬头上（建议横版图，PNG/JPG，3MB以内）</div>
             </div>
           </el-form-item>
+          <el-form-item label="滞留提示">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+              <span>状态无变化满</span>
+              <el-input-number v-model="settings.stall_warn_days" :min="1" :max="60" controls-position="right" style="width:100px" />
+              <span>天黄色提示；满</span>
+              <el-input-number v-model="settings.stall_alert_days" :min="1" :max="90" controls-position="right" style="width:100px" />
+              <span>天红色报警（在外的板同样计算）</span>
+            </div>
+          </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="saveSettings">保存设置</el-button>
           </el-form-item>
@@ -90,6 +99,7 @@
       <el-form-item label="名称" required><el-input v-model="vendorForm.name" /></el-form-item>
       <el-form-item label="类型" required>
         <el-checkbox-group v-model="vendorForm.types">
+          <el-checkbox value="milling">铣磨</el-checkbox>
           <el-checkbox value="cnc">CNC加工</el-checkbox>
           <el-checkbox value="grinding">磨床加工</el-checkbox>
           <el-checkbox value="plating">电镀</el-checkbox>
@@ -136,7 +146,11 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
-  await api.put('/settings', { company_name: settings.value.company_name });
+  await api.put('/settings', {
+    company_name: settings.value.company_name,
+    stall_warn_days: settings.value.stall_warn_days,
+    stall_alert_days: settings.value.stall_alert_days
+  });
   ElMessage.success('设置已保存');
 }
 

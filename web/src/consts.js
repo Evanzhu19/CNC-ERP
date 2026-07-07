@@ -17,13 +17,21 @@ export const ROLE_NAMES = {
   outsourcer: '外发'
 };
 
-export const VENDOR_TYPES = { cnc: 'CNC加工', grinding: '磨床加工', plating: '电镀', other: '其他' };
+export const VENDOR_TYPES = { milling: '铣磨', cnc: 'CNC加工', grinding: '磨床加工', plating: '电镀', other: '其他' };
 
-export const OUTSOURCE_TYPES = {
-  cnc: { label: 'CNC加工', tag: 'primary', doing: 'CNC外发' },
-  grinding: { label: '精磨', tag: 'success', doing: '精磨外发' },
-  plating: { label: '电镀', tag: 'warning', doing: '电镀中' }
-};
+export const OUT_PROC_LABELS = { milling: '铣磨', cnc: 'CNC', grinding: '精磨', plating: '电镀' };
+
+export const PIECE_FLAGS = { repair: '维修中', rework: '返工中', redraw: '改图暂停' };
+
+export function outTypeLabel(typeCsv) {
+  return String(typeCsv || '').split(',').filter(Boolean).map(t => OUT_PROC_LABELS[t] || t).join('+');
+}
+
+export function outDoingLabel(typeCsv) {
+  const parts = String(typeCsv || '').split(',').filter(Boolean);
+  if (parts.length === 1 && parts[0] === 'plating') return '电镀中';
+  return outTypeLabel(typeCsv) + '外发';
+}
 
 export const ORDER_STATUS = {
   active: { label: '进行中', type: 'primary' },
@@ -35,13 +43,15 @@ export const WIP_LABELS = { milling: '铣磨中', cnc: 'CNC加工中', grinding:
 
 export function pieceStatus(piece) {
   if (piece.stages.shipped) return { label: '已出货', type: 'success' };
+  if (piece.flag && PIECE_FLAGS[piece.flag]) {
+    return { label: PIECE_FLAGS[piece.flag] + (piece.flag_note ? `·${piece.flag_note}` : ''), type: 'primary', special: true };
+  }
   const openOut = (piece.outsourcing || []).find(o => !o.returned_date && (o.status === 'open' || o.status === 'draft'));
   if (openOut) {
-    const t = OUTSOURCE_TYPES[openOut.type] || { doing: '外发中', label: '' };
     if (openOut.status === 'draft') {
-      return { label: `${t.label}外发待确认·${openOut.vendor_name}`, type: 'warning' };
+      return { label: `${outTypeLabel(openOut.type)}外发待确认·${openOut.vendor_name}`, type: 'warning' };
     }
-    return { label: `${t.doing}·${openOut.vendor_name}`, type: 'warning' };
+    return { label: `${outDoingLabel(openOut.type)}·${openOut.vendor_name}`, type: 'warning' };
   }
   if (piece.wip_stage && WIP_LABELS[piece.wip_stage]) {
     const extra = piece.wip_note ? `·${piece.wip_note}` : '';
