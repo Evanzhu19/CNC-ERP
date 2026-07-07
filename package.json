@@ -1,0 +1,19 @@
+{
+  "name": "cnc-erp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js",
+    "build:web": "npm --prefix web run build"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.2",
+    "express": "^5.1.0",
+    "multer": "^2.0.1",
+    "pdfjs-dist": "^6.1.200",
+    "tesseract.js": "^7.0.0",
+    "xlsx": "^0.18.5"
+  }
+}

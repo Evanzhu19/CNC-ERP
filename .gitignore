@@ -1,0 +1,21 @@
+node_modules/
+web/node_modules/
+web/dist/
+
+# 生产数据：数据库、图纸附件、备份、LOGO —— 绝不进仓库
+data/
+data-dev/
+
+# 客户文件与临时文件
+*.pdf
+*.xlsx
+*.log
+测试*.mjs
+test-*.mjs
+debug-*.mjs
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+.claude/settings.local.json

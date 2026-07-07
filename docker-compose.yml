@@ -1,0 +1,11 @@
+services:
+  erp:
+    build: .
+    container_name: cnc-erp
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
