@@ -5,6 +5,7 @@
       <el-menu :default-active="activeMenu" router background-color="#1f2d3d" text-color="#cfd6dd" active-text-color="#409eff">
         <el-menu-item index="/"><el-icon><Odometer /></el-icon>看板</el-menu-item>
         <el-menu-item index="/orders"><el-icon><Document /></el-icon>订单管理</el-menu-item>
+        <el-menu-item index="/pieces"><el-icon><Search /></el-icon>板件查询</el-menu-item>
         <el-menu-item index="/outsourcing"><el-icon><Van /></el-icon>外发管理</el-menu-item>
         <el-menu-item index="/basics"><el-icon><OfficeBuilding /></el-icon>客户与厂家</el-menu-item>
         <el-menu-item v-if="user?.role === 'admin'" index="/users"><el-icon><User /></el-icon>用户管理</el-menu-item>
@@ -46,7 +47,7 @@
 import { ref, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { Odometer, Document, Van, OfficeBuilding, User, ArrowDown } from '@element-plus/icons-vue';
+import { Odometer, Document, Van, OfficeBuilding, User, ArrowDown, Search } from '@element-plus/icons-vue';
 import { api, getUser } from '../api.js';
 import { ROLE_NAMES } from '../consts.js';
 
@@ -56,6 +57,7 @@ const user = getUser();
 const roleName = computed(() => ROLE_NAMES[user?.role] || user?.role);
 const activeMenu = computed(() => {
   if (route.path.startsWith('/orders')) return '/orders';
+  if (route.path.startsWith('/pieces')) return '/pieces';
   if (route.path.startsWith('/outsourcing')) return '/outsourcing';
   return route.path;
 });

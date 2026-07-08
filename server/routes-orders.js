@@ -147,6 +147,99 @@ ordersRouter.get('/orders', (req, res) => {
   res.json({ orders: rows });
 });
 
+ordersRouter.get('/pieces/search', (req, res) => {
+  const { q, status, stage } = req.query;
+  const cond = [];
+  const args = [];
+  if (q && String(q).trim()) {
+    const like = `%${String(q).trim()}%`;
+    cond.push(`(p.piece_code LIKE ? OR i.part_no LIKE ? OR i.drawing_no LIKE ? OR i.name LIKE ? OR i.spec LIKE ? OR i.material LIKE ? OR ord.order_no LIKE ? OR ord.customer_po LIKE ? OR c.name LIKE ? OR p.note LIKE ?)`);
+    args.push(like, like, like, like, like, like, like, like, like, like);
+  }
+  if (status && ['active', 'closed', 'void'].includes(status)) { cond.push('ord.status = ?'); args.push(status); }
+  const where = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
+
+  const getSet = k => db.prepare('SELECT value FROM settings WHERE key = ?').get(k)?.value;
+  const warnDays = Math.max(1, Number(getSet('stall_warn_days')) || 2);
+  const alertDays = Math.max(warnDays, Number(getSet('stall_alert_days')) || 4);
+
+  const rows = db.prepare(`
+    SELECT p.id, p.piece_code, p.order_id, p.note, p.wip_stage, p.wip_note, p.flag, p.flag_note,
+      ord.order_no, ord.status AS order_status, ord.due_date,
+      c.name AS customer_name,
+      i.part_no, i.drawing_no, i.name AS item_name, i.spec, i.material,
+      (SELECT MAX(s.done_date) FROM piece_stages s WHERE s.piece_id = p.id AND s.stage = 'milling') AS m_milling,
+      (SELECT MAX(s.done_date) FROM piece_stages s WHERE s.piece_id = p.id AND s.stage = 'cnc') AS m_cnc,
+      (SELECT MAX(s.done_date) FROM piece_stages s WHERE s.piece_id = p.id AND s.stage = 'grinding') AS m_grinding,
+      (SELECT MAX(s.done_date) FROM piece_stages s WHERE s.piece_id = p.id AND s.stage = 'plating_back') AS m_plating_back,
+      (SELECT MAX(s.done_date) FROM piece_stages s WHERE s.piece_id = p.id AND s.stage = 'shipped') AS m_shipped,
+      (SELECT o5.type || '|' || o5.status || '|' || o5.batch_no || '|' || v5.name
+        FROM outsourcing_pieces op5 JOIN outsourcing o5 ON o5.id = op5.outsourcing_id JOIN vendors v5 ON v5.id = o5.vendor_id
+        WHERE op5.piece_id = p.id AND op5.returned_date IS NULL AND o5.status IN ('draft','open') LIMIT 1) AS out_info,
+      MAX(
+        COALESCE((SELECT MAX(s.recorded_at) FROM piece_stages s WHERE s.piece_id = p.id), ord.created_at),
+        COALESCE((SELECT MAX(o3.created_at) FROM outsourcing_pieces op3 JOIN outsourcing o3 ON o3.id = op3.outsourcing_id WHERE op3.piece_id = p.id), ord.created_at),
+        COALESCE((SELECT MAX(op4.returned_date) FROM outsourcing_pieces op4 WHERE op4.piece_id = p.id), ord.created_at),
+        COALESCE(p.wip_date, ord.created_at),
+        COALESCE(p.flag_date, ord.created_at)
+      ) AS last_act
+    FROM pieces p
+    JOIN orders ord ON ord.id = p.order_id
+    JOIN order_items i ON i.id = p.item_id
+    JOIN customers c ON c.id = ord.customer_id
+    ${where}
+    GROUP BY p.id
+    ORDER BY ord.order_no DESC, p.seq
+    LIMIT 300
+  `).all(...args);
+
+  const WIP = { milling: '铣磨中', cnc: 'CNC加工中', grinding: '精磨中' };
+  const FLAG = { repair: '维修中', rework: '返工中', redraw: '改图暂停' };
+  const OUT_PROC = { milling: '铣磨', cnc: 'CNC', grinding: '精磨', plating: '电镀' };
+  const result = [];
+  for (const r of rows) {
+    const shipped = !!r.m_shipped;
+    let statusLabel, statusType;
+    if (shipped) { statusLabel = '已出货'; statusType = 'success'; }
+    else if (r.flag) { statusLabel = FLAG[r.flag] || r.flag; statusType = 'special'; }
+    else if (r.out_info) {
+      const [type, st, batch, vendor] = r.out_info.split('|');
+      const label = String(type).split(',').map(t => OUT_PROC[t] || t).join('+');
+      statusLabel = (st === 'draft' ? `${label}外发待确认·${vendor}` : (type === 'plating' ? `电镀中·${vendor}` : `${label}外发·${vendor}`));
+      statusType = 'warning';
+    }
+    else if (r.wip_stage) { statusLabel = (WIP[r.wip_stage] || '') + (r.wip_note ? '·' + r.wip_note : ''); statusType = 'wip'; }
+    else if (r.m_plating_back) { statusLabel = '待出货'; statusType = 'primary'; }
+    else if (r.m_grinding) { statusLabel = '待电镀'; statusType = 'info'; }
+    else if (r.m_cnc) { statusLabel = '待精磨'; statusType = 'info'; }
+    else if (r.m_milling) { statusLabel = '待CNC'; statusType = 'info'; }
+    else { statusLabel = '待铣磨'; statusType = 'info'; }
+
+    const idleDays = shipped ? 0 : Math.max(0, Math.floor((Date.now() - new Date(String(r.last_act).replace(' ', 'T')).getTime()) / 86400_000));
+    const stallLevel = shipped || r.order_status !== 'active' ? null : (idleDays >= alertDays ? 'alert' : idleDays >= warnDays ? 'warn' : null);
+
+    if (stage) {
+      const cur = shipped ? 'shipped'
+        : r.out_info ? 'out'
+        : r.m_plating_back ? 'plating_done'
+        : r.m_grinding ? 'wait_plating'
+        : r.m_cnc ? 'wait_grinding'
+        : r.m_milling ? 'wait_cnc' : 'wait_milling';
+      if (stage !== cur) continue;
+    }
+
+    result.push({
+      id: r.id, piece_code: r.piece_code, order_id: r.order_id, order_no: r.order_no,
+      order_status: r.order_status, customer_name: r.customer_name, due_date: r.due_date,
+      part_no: r.part_no, drawing_no: r.drawing_no, item_name: r.item_name, spec: r.spec, material: r.material,
+      note: r.note, status_label: statusLabel, status_type: statusType,
+      idle_days: idleDays, stall_level: stallLevel,
+      done: { milling: r.m_milling, cnc: r.m_cnc, grinding: r.m_grinding, plating_back: r.m_plating_back, shipped: r.m_shipped }
+    });
+  }
+  res.json({ pieces: result, stall_warn_days: warnDays, stall_alert_days: alertDays });
+});
+
 ordersRouter.get('/orders/:id', (req, res) => {
   const order = db.prepare(`
     SELECT o.*, c.name AS customer_name, u.name AS created_by_name

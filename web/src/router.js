@@ -10,6 +10,7 @@ const routes = [
     children: [
       { path: '', component: () => import('./views/Dashboard.vue') },
       { path: 'orders', component: () => import('./views/Orders.vue') },
+      { path: 'pieces', component: () => import('./views/Pieces.vue') },
       { path: 'orders/new', component: () => import('./views/OrderEdit.vue') },
       { path: 'orders/:id', component: () => import('./views/OrderDetail.vue') },
       { path: 'orders/:id/edit', component: () => import('./views/OrderEdit.vue') },
