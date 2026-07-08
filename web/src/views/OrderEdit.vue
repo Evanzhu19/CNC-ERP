@@ -6,10 +6,6 @@
           <el-icon style="margin-right: 4px"><ArrowLeft /></el-icon>{{ isEdit ? '返回订单详情' : '返回订单列表' }}
         </el-button>
         <span style="font-weight: bold">{{ isEdit ? `编辑订单 ${form.order_no || ''}` : '新建订单' }}</span>
-        <div style="flex: 1"></div>
-        <el-button type="primary" plain @click="openPdfImport">
-          <el-icon style="margin-right: 4px"><Document /></el-icon>导入客户PDF采购单
-        </el-button>
       </div>
     </template>
 

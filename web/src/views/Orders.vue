@@ -15,7 +15,6 @@
       <el-button @click="load">查询</el-button>
       <div style="flex: 1"></div>
       <el-button v-if="entry" type="warning" plain @click="openReconcile">PDF+台账 双证录入</el-button>
-      <el-button v-if="entry" type="success" plain @click="openExcelImport">Excel批量导入</el-button>
       <el-button v-if="entry" type="primary" @click="$router.push('/orders/new')">+ 新建订单</el-button>
     </div>
 

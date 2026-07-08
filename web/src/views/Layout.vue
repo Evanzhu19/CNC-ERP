@@ -7,6 +7,7 @@
         <el-menu-item index="/orders"><el-icon><Document /></el-icon>订单管理</el-menu-item>
         <el-menu-item index="/pieces"><el-icon><Search /></el-icon>板件查询</el-menu-item>
         <el-menu-item index="/outsourcing"><el-icon><Van /></el-icon>外发管理</el-menu-item>
+        <el-menu-item index="/shipments"><el-icon><Tickets /></el-icon>送货单</el-menu-item>
         <el-menu-item index="/basics"><el-icon><OfficeBuilding /></el-icon>客户与厂家</el-menu-item>
         <el-menu-item v-if="user?.role === 'admin'" index="/users"><el-icon><User /></el-icon>用户管理</el-menu-item>
       </el-menu>
@@ -47,7 +48,7 @@
 import { ref, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { Odometer, Document, Van, OfficeBuilding, User, ArrowDown, Search } from '@element-plus/icons-vue';
+import { Odometer, Document, Van, OfficeBuilding, User, ArrowDown, Search, Tickets } from '@element-plus/icons-vue';
 import { api, getUser } from '../api.js';
 import { ROLE_NAMES } from '../consts.js';
 
@@ -59,6 +60,7 @@ const activeMenu = computed(() => {
   if (route.path.startsWith('/orders')) return '/orders';
   if (route.path.startsWith('/pieces')) return '/pieces';
   if (route.path.startsWith('/outsourcing')) return '/outsourcing';
+  if (route.path.startsWith('/shipments')) return '/shipments';
   return route.path;
 });
 

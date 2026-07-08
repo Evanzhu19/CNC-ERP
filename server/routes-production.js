@@ -569,6 +569,37 @@ productionRouter.delete('/shipments/:id', requireRole(...ENTRY_ROLES), (req, res
   }
 });
 
+productionRouter.get('/shipments', (req, res) => {
+  const { q, month } = req.query;
+  const cond = [];
+  const args = [];
+  if (month) { cond.push(`substr(s.ship_date, 1, 7) = ?`); args.push(month); }
+  if (q) {
+    const like = `%${String(q).trim()}%`;
+    cond.push(`(s.ship_no LIKE ? OR o.order_no LIKE ? OR o.customer_po LIKE ? OR c.name LIKE ?)`);
+    args.push(like, like, like, like);
+  }
+  const where = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
+  const showPrice = canSeePrice(req);
+  const rows = db.prepare(`
+    SELECT s.id, s.ship_no, s.ship_date, s.note, s.order_id,
+      o.order_no, o.customer_po, c.name AS customer_name, u.name AS created_by_name,
+      (SELECT COUNT(*) FROM shipment_pieces sp WHERE sp.shipment_id = s.id) AS piece_count,
+      (SELECT COALESCE(SUM(i.unit_price), 0) FROM shipment_pieces sp
+        JOIN pieces p ON p.id = sp.piece_id JOIN order_items i ON i.id = p.item_id
+        WHERE sp.shipment_id = s.id) AS amount
+    FROM shipments s
+    JOIN orders o ON o.id = s.order_id
+    JOIN customers c ON c.id = o.customer_id
+    LEFT JOIN users u ON u.id = s.created_by
+    ${where}
+    ORDER BY s.ship_date DESC, s.id DESC
+    LIMIT 500
+  `).all(...args);
+  if (!showPrice) rows.forEach(r => delete r.amount);
+  res.json({ shipments: rows });
+});
+
 productionRouter.get('/shipments/:id/print-data', (req, res) => {
   const s = db.prepare(`
     SELECT s.*, o.order_no, o.customer_po, c.name AS customer_name, c.contact, c.phone, c.address, u.name AS created_by_name
