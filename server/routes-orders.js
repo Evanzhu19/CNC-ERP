@@ -3,7 +3,7 @@ import multer from 'multer';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { existsSync, unlinkSync } from 'node:fs';
-import { db, UPLOAD_DIR, today, verifyPassword } from './db.js';
+import { db, UPLOAD_DIR, today, verifyPassword, lastActExpr } from './db.js';
 import { requireRole, canSeePrice, ENTRY_ROLES } from './auth.js';
 import { parsePurchaseOrderPdf } from './pdf-parse.js';
 import { parseOrdersExcel } from './excel-parse.js';
@@ -121,13 +121,7 @@ ordersRouter.get('/orders', (req, res) => {
   const stallExpr = `
     (SELECT COUNT(*) FROM pieces p2 WHERE p2.order_id = o.id AND o.status = 'active'
       AND NOT EXISTS (SELECT 1 FROM shipment_pieces sp2 WHERE sp2.piece_id = p2.id)
-      AND julianday(datetime('now','localtime')) - julianday(MAX(
-        COALESCE((SELECT MAX(s2.recorded_at) FROM piece_stages s2 WHERE s2.piece_id = p2.id), o.created_at),
-        COALESCE((SELECT MAX(o32.created_at) FROM outsourcing_pieces op32 JOIN outsourcing o32 ON o32.id = op32.outsourcing_id WHERE op32.piece_id = p2.id), o.created_at),
-        COALESCE((SELECT MAX(op42.returned_date) FROM outsourcing_pieces op42 WHERE op42.piece_id = p2.id), o.created_at),
-        COALESCE(p2.wip_date, o.created_at),
-        COALESCE(p2.flag_date, o.created_at)
-      )) >= ?)`;
+      AND julianday(date('now','localtime')) - julianday(${lastActExpr('p2', 'o')}) >= ?)`;
   const rows = db.prepare(`
     SELECT o.id, o.order_no, o.customer_po, o.order_date, o.due_date, o.status, o.remark,
       c.name AS customer_name, o.customer_id,
@@ -176,13 +170,7 @@ ordersRouter.get('/pieces/search', (req, res) => {
       (SELECT o5.type || '|' || o5.status || '|' || o5.batch_no || '|' || v5.name
         FROM outsourcing_pieces op5 JOIN outsourcing o5 ON o5.id = op5.outsourcing_id JOIN vendors v5 ON v5.id = o5.vendor_id
         WHERE op5.piece_id = p.id AND op5.returned_date IS NULL AND o5.status IN ('draft','open') LIMIT 1) AS out_info,
-      MAX(
-        COALESCE((SELECT MAX(s.recorded_at) FROM piece_stages s WHERE s.piece_id = p.id), ord.created_at),
-        COALESCE((SELECT MAX(o3.created_at) FROM outsourcing_pieces op3 JOIN outsourcing o3 ON o3.id = op3.outsourcing_id WHERE op3.piece_id = p.id), ord.created_at),
-        COALESCE((SELECT MAX(op4.returned_date) FROM outsourcing_pieces op4 WHERE op4.piece_id = p.id), ord.created_at),
-        COALESCE(p.wip_date, ord.created_at),
-        COALESCE(p.flag_date, ord.created_at)
-      ) AS last_act
+      ${lastActExpr('p', 'ord')} AS last_act
     FROM pieces p
     JOIN orders ord ON ord.id = p.order_id
     JOIN order_items i ON i.id = p.item_id
@@ -215,7 +203,7 @@ ordersRouter.get('/pieces/search', (req, res) => {
     else if (r.m_milling) { statusLabel = '待CNC'; statusType = 'info'; }
     else { statusLabel = '待铣磨'; statusType = 'info'; }
 
-    const idleDays = shipped ? 0 : Math.max(0, Math.floor((Date.now() - new Date(String(r.last_act).replace(' ', 'T')).getTime()) / 86400_000));
+    const idleDays = shipped ? 0 : Math.max(0, Math.round((Date.parse(today()) - Date.parse(String(r.last_act).slice(0, 10))) / 86400_000));
     const stallLevel = shipped || r.order_status !== 'active' ? null : (idleDays >= alertDays ? 'alert' : idleDays >= warnDays ? 'warn' : null);
 
     if (stage) {
@@ -252,16 +240,9 @@ ordersRouter.get('/orders/:id', (req, res) => {
 
   const items = db.prepare('SELECT * FROM order_items WHERE order_id = ? ORDER BY line_no').all(order.id);
   const pieces = db.prepare(`
-    SELECT p.*,
-      MAX(
-        COALESCE((SELECT MAX(s.recorded_at) FROM piece_stages s WHERE s.piece_id = p.id), o.created_at),
-        COALESCE((SELECT MAX(o3.created_at) FROM outsourcing_pieces op3 JOIN outsourcing o3 ON o3.id = op3.outsourcing_id WHERE op3.piece_id = p.id), o.created_at),
-        COALESCE((SELECT MAX(op4.returned_date) FROM outsourcing_pieces op4 WHERE op4.piece_id = p.id), o.created_at),
-        COALESCE(p.wip_date, o.created_at),
-        COALESCE(p.flag_date, o.created_at)
-      ) AS last_act
+    SELECT p.*, ${lastActExpr('p', 'o')} AS last_act
     FROM pieces p JOIN orders o ON o.id = p.order_id
-    WHERE p.order_id = ? GROUP BY p.id ORDER BY p.seq
+    WHERE p.order_id = ? ORDER BY p.seq
   `).all(order.id);
   const stages = db.prepare(`
     SELECT s.piece_id, s.stage, s.done_date, s.note, s.recorded_at, u.name AS recorded_by_name
@@ -312,7 +293,7 @@ ordersRouter.get('/orders/:id', (req, res) => {
       wip_stage: p.wip_stage, wip_date: p.wip_date, wip_note: p.wip_note,
       note: p.note, flag: p.flag, flag_note: p.flag_note, flag_date: p.flag_date,
       idle_days: p.last_act && !shipMap[p.id]
-        ? Math.max(0, Math.floor((Date.now() - new Date(String(p.last_act).replace(' ', 'T')).getTime()) / 86400_000))
+        ? Math.max(0, Math.round((Date.parse(today()) - Date.parse(String(p.last_act).slice(0, 10))) / 86400_000))
         : 0,
       stages: stageMap[p.id] || {},
       outsourcing: (outMap[p.id] || []),

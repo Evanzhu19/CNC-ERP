@@ -222,6 +222,18 @@ if (hasAdmin.n === 0) {
   console.log('已创建初始管理员账号：admin / admin123（登录后请立即改密码）');
 }
 
+// 板件"当前状态开始时间"：取各类业务日期的最大值（报工完成日/外发发出日/回货日/开工日/特殊状态标记日），
+// 一个都没有才用订单下单日兜底。故意不用 created_at/recorded_at——补录历史时倒填的日期要能生效。
+export function lastActExpr(p = 'p', o = 'ord') {
+  return `COALESCE(NULLIF(MAX(
+    COALESCE((SELECT MAX(s9.done_date) FROM piece_stages s9 WHERE s9.piece_id = ${p}.id), '0'),
+    COALESCE((SELECT MAX(o9.sent_date) FROM outsourcing_pieces op9 JOIN outsourcing o9 ON o9.id = op9.outsourcing_id WHERE op9.piece_id = ${p}.id), '0'),
+    COALESCE((SELECT MAX(op8.returned_date) FROM outsourcing_pieces op8 WHERE op8.piece_id = ${p}.id), '0'),
+    COALESCE(${p}.wip_date, '0'),
+    COALESCE(${p}.flag_date, '0')
+  ), '0'), ${o}.order_date)`;
+}
+
 export function today() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;

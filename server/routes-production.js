@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db, today } from './db.js';
+import { db, today, lastActExpr } from './db.js';
 import { requireRole, canSeePrice, ENTRY_ROLES } from './auth.js';
 
 export const productionRouter = Router();
@@ -648,13 +648,7 @@ productionRouter.get('/dashboard', (req, res) => {
   const stalled = db.prepare(`
     SELECT p.piece_code, p.id AS piece_id, ord.id AS order_id, ord.order_no, ord.due_date,
       c.name AS customer_name, i.part_no, i.drawing_no, i.name AS item_name, i.spec,
-      MAX(
-        COALESCE((SELECT MAX(s.recorded_at) FROM piece_stages s WHERE s.piece_id = p.id), ord.created_at),
-        COALESCE((SELECT MAX(o3.created_at) FROM outsourcing_pieces op3 JOIN outsourcing o3 ON o3.id = op3.outsourcing_id WHERE op3.piece_id = p.id), ord.created_at),
-        COALESCE((SELECT MAX(op4.returned_date) FROM outsourcing_pieces op4 WHERE op4.piece_id = p.id), ord.created_at),
-        COALESCE(p.wip_date, ord.created_at),
-        COALESCE(p.flag_date, ord.created_at)
-      ) AS last_act,
+      ${lastActExpr('p', 'ord')} AS last_act,
       (SELECT o5.batch_no || '·' || v5.name FROM outsourcing_pieces op5
         JOIN outsourcing o5 ON o5.id = op5.outsourcing_id
         JOIN vendors v5 ON v5.id = o5.vendor_id
@@ -670,12 +664,12 @@ productionRouter.get('/dashboard', (req, res) => {
     WHERE ord.status = 'active'
       AND NOT EXISTS (SELECT 1 FROM shipment_pieces sp WHERE sp.piece_id = p.id)
     GROUP BY p.id
-    HAVING julianday(datetime('now','localtime')) - julianday(last_act) >= ?
+    HAVING julianday(date('now','localtime')) - julianday(date(last_act)) >= ?
     ORDER BY last_act
     LIMIT 150
   `).all(warnDays);
   for (const s of stalled) {
-    s.days_idle = Math.floor((Date.now() - new Date(s.last_act.replace(' ', 'T')).getTime()) / 86400_000);
+    s.days_idle = Math.max(0, Math.round((Date.parse(today()) - Date.parse(String(s.last_act).slice(0, 10))) / 86400_000));
     s.level = s.days_idle >= alertDays ? 'alert' : 'warn';
     s.next_stage = s.out_at ? `在外·${s.out_at}`
       : !s.has_milling ? '待铣磨' : !s.has_cnc ? '待CNC' : !s.has_grinding ? '待精磨' : !s.has_plating_back ? '待电镀' : '待出货';
