@@ -56,7 +56,16 @@
         </div>
       </template>
 
-      <el-table :data="pieceRows" border size="small" @selection-change="s => selected = s" row-key="id" :row-class-name="stallRowClass">
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
+        <el-input v-model="pieceQuery" placeholder="在本订单内筛板件：板件号/编号/图号/品名/规格/材质/备注" clearable style="width: 360px" />
+        <el-select v-model="pieceFilter" placeholder="全部状态" clearable style="width: 140px">
+          <el-option v-for="s in ['待铣磨','待CNC','待精磨','待电镀','待出货','加工中','外发中','特殊状态','已出货']" :key="s" :label="s" :value="s" />
+        </el-select>
+        <span v-if="pieceQuery || pieceFilter" style="color:#909399; font-size:13px">
+          筛出 {{ filteredPieceRows.length }} / 共 {{ pieceRows.length }} 件
+        </span>
+      </div>
+      <el-table ref="pieceTable" :data="filteredPieceRows" border size="small" @selection-change="s => selected = s" row-key="id" :row-class-name="stallRowClass">
         <el-table-column type="selection" width="40" :selectable="() => entry && detail.order.status !== 'void'" reserve-selection />
         <el-table-column label="板件号" width="130" fixed>
           <template #default="{ row }">
@@ -330,7 +339,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { ArrowLeft } from '@element-plus/icons-vue';
@@ -486,6 +495,35 @@ const pieceRows = computed(() => {
     }
   }
   return rows;
+});
+
+const pieceQuery = ref('');
+const pieceFilter = ref('');
+const pieceTable = ref(null);
+
+function pieceCategory(row) {
+  if (row.stages.shipped) return '已出货';
+  if (row.statusTag.special) return '特殊状态';
+  if (row.outNow) return '外发中';
+  if (row.wip_stage) return '加工中';
+  return row.statusTag.label;
+}
+
+const filteredPieceRows = computed(() => {
+  let rows = pieceRows.value;
+  if (pieceFilter.value) rows = rows.filter(r => pieceCategory(r) === pieceFilter.value);
+  const kw = pieceQuery.value.trim().toLowerCase();
+  if (kw) {
+    rows = rows.filter(r =>
+      [r.piece_code, r.part_no, r.drawing_no, r.item_name, r.spec, r.material, r.note, r.item_remark, r.statusTag.label]
+        .some(v => v && String(v).toLowerCase().includes(kw))
+    );
+  }
+  return rows;
+});
+
+watch([pieceQuery, pieceFilter], () => {
+  pieceTable.value?.clearSelection();
 });
 
 function isExt(row, proc) {
