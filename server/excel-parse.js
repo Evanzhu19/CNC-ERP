@@ -110,6 +110,8 @@ export function parseOrdersExcel(buffer) {
       if (!currentCustomer) continue;
 
       const remarkParts = [get('_surface'), get('_outsource'), get('remark')].filter(Boolean);
+      const price = 'unit_price' in col ? parsePrice(getRaw('unit_price')) : null;
+      const explicitAmt = 'amount' in col ? parsePrice(getRaw('amount')) : null;
       const line = {
         part_no: get('part_no') || null,
         drawing_no: get('drawing_no') || null,
@@ -117,7 +119,8 @@ export function parseOrdersExcel(buffer) {
         spec: get('spec') || null,
         material: get('material') || null,
         qty,
-        unit_price: 'unit_price' in col ? parsePrice(getRaw('unit_price')) : null,
+        unit_price: price,
+        amount: explicitAmt != null ? explicitAmt : (price != null ? price * qty : null),
         remark: remarkParts.length ? [...new Set(remarkParts)].join('；') : null,
         due: '_due' in col ? parseDueDate(getRaw('_due')) : null
       };
@@ -131,12 +134,15 @@ export function parseOrdersExcel(buffer) {
 
     const orders = [...groups.values()].map(g => {
       const dues = g.lines.map(l => l.due).filter(Boolean).sort();
+      const amounts = g.lines.map(l => l.amount);
+      const hasAllAmounts = amounts.every(a => a != null);
       return {
         customer_name: g.customer_name,
         customer_po: g.customer_po,
         due_date: dues[0] || null,
         lines: g.lines.map(({ due, ...rest }) => rest),
-        total_qty: g.lines.reduce((s, l) => s + l.qty, 0)
+        total_qty: g.lines.reduce((s, l) => s + l.qty, 0),
+        total_amount: hasAllAmounts ? Math.round(amounts.reduce((s, a) => s + a, 0) * 100) / 100 : null
       };
     });
     sheets.push({ name, orders });

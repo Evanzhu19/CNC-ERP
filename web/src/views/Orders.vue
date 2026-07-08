@@ -14,6 +14,7 @@
       <el-input v-model="filters.q" placeholder="订单号/客户PO/编号/图号/规格/品名/板件号" style="width: 280px" clearable @keyup.enter="load" @clear="load" />
       <el-button @click="load">查询</el-button>
       <div style="flex: 1"></div>
+      <el-button v-if="entry" type="warning" plain @click="openReconcile">PDF+台账 双证录入</el-button>
       <el-button v-if="entry" type="success" plain @click="openExcelImport">Excel批量导入</el-button>
       <el-button v-if="entry" type="primary" @click="$router.push('/orders/new')">+ 新建订单</el-button>
     </div>
@@ -52,6 +53,68 @@
     </el-table>
     <el-empty v-if="!loading && !orders.length" description="没有符合条件的订单" />
   </el-card>
+
+  <el-dialog v-model="reconcileDialog" title="PDF+台账 双证录入" width="720px" top="6vh">
+    <el-alert type="info" :closable="false" style="margin-bottom: 14px"
+      title="同时上传：客户的PDF采购单 + Excel台账。系统按PO号在台账里找到对应订单，核对 PO/客户/总件数/总金额，全部对上才准录入。件数或金额对不上（比如台账少录了）会拦下来。" />
+    <div style="display:flex; gap:16px; margin-bottom:14px;">
+      <div style="flex:1">
+        <div style="margin-bottom:6px; color:#606266">① 客户PDF采购单</div>
+        <input ref="pdfInput" type="file" accept=".pdf" style="display:none" @change="e => pickFile(e, 'pdf')" />
+        <el-button style="width:100%" @click="$refs.pdfInput.click()">
+          {{ recPdf ? '✓ ' + recPdf.name : '选择PDF文件' }}
+        </el-button>
+      </div>
+      <div style="flex:1">
+        <div style="margin-bottom:6px; color:#606266">② Excel台账</div>
+        <input ref="xlsInput" type="file" accept=".xlsx,.xls" style="display:none" @change="e => pickFile(e, 'xls')" />
+        <el-button style="width:100%" @click="$refs.xlsInput.click()">
+          {{ recXls ? '✓ ' + recXls.name : '选择Excel台账' }}
+        </el-button>
+      </div>
+      <div style="display:flex; align-items:flex-end">
+        <el-button type="primary" :loading="reconciling" :disabled="!recPdf || !recXls" @click="doReconcile">开始核对</el-button>
+      </div>
+    </div>
+
+    <div v-if="recError" style="margin-bottom:12px">
+      <el-alert type="error" :closable="false" :title="recError" />
+    </div>
+
+    <div v-if="recResult">
+      <el-alert v-if="recResult.po_exists" type="warning" :closable="false" style="margin-bottom:10px"
+        :title="`这张PO已经录过了（订单 ${recResult.po_exists}），不能重复录入。`" />
+      <el-alert v-else-if="recResult.all_ok" type="success" :closable="false" style="margin-bottom:10px"
+        title="✓ 核对通过！PDF与台账完全一致，可以录入。" />
+      <el-alert v-else type="error" :closable="false" style="margin-bottom:10px"
+        title="✗ 核对未通过，这张单不能录入。请回台账核对下面标红的项后重新上传。" />
+
+      <table class="rec-table">
+        <thead><tr><th>核对项</th><th>PDF采购单</th><th>Excel台账</th><th style="width:80px">结果</th></tr></thead>
+        <tbody>
+          <tr v-for="c in recResult.checks" :key="c.key" :class="{ bad: !c.ok }">
+            <td>{{ c.label }}</td>
+            <td>{{ c.missing && c.missing_side !== 'ledger' ? '（PDF没抽到）' : fmtVal(c) }}</td>
+            <td>{{ c.missing_side === 'ledger' ? '（台账没金额列）' : fmtLedger(c) }}</td>
+            <td>
+              <span v-if="c.ok" style="color:#67c23a">✓ 一致</span>
+              <span v-else style="color:#f56c6c">✗ {{ c.missing ? '缺字段' : '不符' }}</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="margin-top:10px; color:#909399; font-size:13px">
+        台账对应订单：{{ recResult.ledger.customer_name }} / {{ recResult.ledger.lines.length }}行 / 交期{{ recResult.ledger.due_date || '—' }}。录入以台账为准（含图号、材质、外发等内部信息），PDF会自动留档为附件。
+      </div>
+    </div>
+
+    <template #footer>
+      <el-button @click="reconcileDialog = false">关闭</el-button>
+      <el-button v-if="recResult && recResult.all_ok && !recResult.po_exists" type="primary" :loading="importing" @click="doReconcileImport">
+        核对通过，确认录入
+      </el-button>
+    </template>
+  </el-dialog>
 
   <el-dialog v-model="excelDialog" title="Excel台账批量导入" width="960px" top="4vh">
     <div v-if="!excelResult">
@@ -124,9 +187,12 @@
 
 <script setup>
 import { ref, computed, nextTick, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, canSeePrice, canEntry } from '../api.js';
 import { ORDER_STATUS } from '../consts.js';
+
+const router = useRouter();
 
 const orders = ref([]);
 const customers = ref([]);
@@ -135,6 +201,74 @@ const filters = ref({ status: 'active', customer_id: null, month: null, q: '' })
 const showPrice = canSeePrice();
 const entry = canEntry();
 const today = new Date().toISOString().slice(0, 10);
+
+const reconcileDialog = ref(false);
+const recPdf = ref(null);
+const recXls = ref(null);
+const reconciling = ref(false);
+const recResult = ref(null);
+const recError = ref('');
+
+function openReconcile() {
+  recPdf.value = null;
+  recXls.value = null;
+  recResult.value = null;
+  recError.value = '';
+  reconcileDialog.value = true;
+}
+
+function pickFile(e, which) {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  if (which === 'pdf') recPdf.value = f; else recXls.value = f;
+  recResult.value = null;
+  recError.value = '';
+}
+
+function fmtVal(c) {
+  if (c.key === 'amount' && c.pdf != null) return '¥' + Number(c.pdf).toLocaleString('zh-CN', { minimumFractionDigits: 2 });
+  if (c.key === 'qty') return c.pdf + ' 件';
+  return c.pdf ?? '';
+}
+function fmtLedger(c) {
+  if (c.key === 'amount' && c.ledger != null) return '¥' + Number(c.ledger).toLocaleString('zh-CN', { minimumFractionDigits: 2 });
+  if (c.key === 'qty') return c.ledger + ' 件';
+  return c.ledger ?? '';
+}
+
+async function doReconcile() {
+  reconciling.value = true;
+  recResult.value = null;
+  recError.value = '';
+  try {
+    const fd = new FormData();
+    fd.append('pdf', recPdf.value);
+    fd.append('excel', recXls.value);
+    const { data } = await api.post('/orders/reconcile', fd);
+    recResult.value = data;
+  } catch (err) {
+    recError.value = err.response?.data?.error || '核对失败';
+  } finally {
+    reconciling.value = false;
+  }
+}
+
+async function doReconcileImport() {
+  importing.value = true;
+  try {
+    const fd = new FormData();
+    fd.append('pdf', recPdf.value);
+    fd.append('excel', recXls.value);
+    const { data } = await api.post('/orders/reconcile-import', fd);
+    ElMessage.success(`已录入订单 ${data.order_no}（${data.pieces}件）${data.customer_created ? '，并新建了客户' : ''}，PDF已留档`);
+    reconcileDialog.value = false;
+    load();
+    router.push(`/orders/${data.order_id}`);
+  } catch { /* 拦截器已提示 */ } finally {
+    importing.value = false;
+  }
+}
 
 const excelDialog = ref(false);
 const excelParsing = ref(false);
@@ -246,4 +380,8 @@ onMounted(async () => {
 .toolbar { display: flex; gap: 8px; margin-bottom: 14px; align-items: center; }
 .prog { color: #606266; font-size: 13px; }
 .tag-special { background: #f3eefc !important; border-color: #b39ddb !important; color: #6a3fb5 !important; }
+.rec-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.rec-table th, .rec-table td { border: 1px solid #ebeef5; padding: 8px 12px; text-align: left; }
+.rec-table th { background: #f5f7fa; font-weight: 500; }
+.rec-table tr.bad td { background: #fef0f0; }
 </style>

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { existsSync, unlinkSync } from 'node:fs';
+import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { db, UPLOAD_DIR, today, verifyPassword, lastActExpr } from './db.js';
 import { requireRole, canSeePrice, ENTRY_ROLES } from './auth.js';
 import { parsePurchaseOrderPdf } from './pdf-parse.js';
@@ -625,6 +625,148 @@ ordersRouter.post('/orders/import-excel', requireRole(...ENTRY_ROLES), (req, res
     console.error('Excel导入失败:', e);
     res.status(400).json({ error: '导入失败，已全部回滚：' + e.message });
   }
+});
+
+// ===== 双证录入：PDF采购单 × Excel台账 交叉核对 =====
+const norm = s => String(s || '').replace(/\s/g, '').toUpperCase();
+const nameMatch = (a, b) => {
+  const x = norm(a), y = norm(b);
+  return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
+};
+
+function findLedgerOrder(sheets, po) {
+  const target = norm(po);
+  const hits = [];
+  for (const sheet of sheets) {
+    for (const o of (sheet.orders || [])) {
+      if (norm(o.customer_po) === target) hits.push(o);
+    }
+  }
+  return hits;
+}
+
+// 返回 { ok, error?, checks?, ledger?, pdf? }
+async function reconcile(pdfBuffer, xlsBuffer) {
+  const ownName = db.prepare(`SELECT value FROM settings WHERE key = 'company_name'`).get()?.value || '';
+  const pdf = await parsePurchaseOrderPdf(pdfBuffer, ownName);
+  if (pdf.error) return { ok: false, error: 'PDF识别失败：' + pdf.message };
+  const s = pdf.summary;
+  if (!s.customer_po) return { ok: false, error: 'PDF里没识别出采购单号（PO），无法定位台账订单。' };
+
+  let sheets;
+  try { sheets = parseOrdersExcel(xlsBuffer).sheets; }
+  catch (e) { return { ok: false, error: 'Excel台账解析失败：' + e.message }; }
+
+  const hits = findLedgerOrder(sheets, s.customer_po);
+  if (hits.length === 0) return { ok: false, error: `台账里找不到 PO=${s.customer_po} 对应的订单，请确认上传的台账里有这一单。` };
+  if (hits.length > 1) return { ok: false, error: `台账里有 ${hits.length} 张单都写着 PO=${s.customer_po}，请先在台账里理清后再导入。` };
+  const led = hits[0];
+
+  const checks = [];
+  checks.push({ key: 'po', label: '采购单号', pdf: s.customer_po, ledger: led.customer_po, ok: norm(s.customer_po) === norm(led.customer_po) });
+
+  if (!s.customer) checks.push({ key: 'customer', label: '客户', pdf: null, ledger: led.customer_name, ok: false, missing: true });
+  else checks.push({ key: 'customer', label: '客户', pdf: s.customer, ledger: led.customer_name, ok: nameMatch(s.customer, led.customer_name) });
+
+  if (s.total_qty == null) checks.push({ key: 'qty', label: '总件数', pdf: null, ledger: led.total_qty, ok: false, missing: true });
+  else checks.push({ key: 'qty', label: '总件数', pdf: s.total_qty, ledger: led.total_qty, ok: s.total_qty === led.total_qty });
+
+  if (s.total_amount == null) checks.push({ key: 'amount', label: '总金额', pdf: null, ledger: led.total_amount, ok: false, missing: true });
+  else if (led.total_amount == null) checks.push({ key: 'amount', label: '总金额', pdf: s.total_amount, ledger: null, ok: false, missing: true, missing_side: 'ledger' });
+  else checks.push({ key: 'amount', label: '总金额', pdf: s.total_amount, ledger: led.total_amount, ok: Math.round(s.total_amount * 100) === Math.round(led.total_amount * 100) });
+
+  const all_ok = checks.every(c => c.ok);
+  return { ok: true, all_ok, checks, ledger: led, pdf: s };
+}
+
+const reconcileUpload = pdfUpload.fields([{ name: 'pdf', maxCount: 1 }, { name: 'excel', maxCount: 1 }]);
+
+ordersRouter.post('/orders/reconcile', requireRole(...ENTRY_ROLES), reconcileUpload, async (req, res) => {
+  const pdfFile = req.files?.pdf?.[0];
+  const xlsFile = req.files?.excel?.[0];
+  if (!pdfFile || !xlsFile) return res.status(400).json({ error: '请同时上传客户PDF采购单和Excel台账两个文件' });
+  try {
+    const r = await reconcile(pdfFile.buffer, xlsFile.buffer);
+    if (!r.ok) return res.status(422).json({ error: r.error });
+    const showPrice = canSeePrice(req);
+    if (!showPrice) {
+      r.checks = r.checks.filter(c => c.key !== 'amount');
+      if (r.ledger) for (const l of r.ledger.lines) delete l.unit_price;
+      if (r.ledger) delete r.ledger.total_amount;
+      if (r.pdf) delete r.pdf.total_amount;
+    }
+    const dup = r.ledger.customer_po ? db.prepare('SELECT order_no FROM orders WHERE customer_po = ?').get(r.ledger.customer_po) : null;
+    res.json({ ...r, po_exists: dup ? dup.order_no : null });
+  } catch (e) {
+    console.error('双证核对失败:', e);
+    res.status(422).json({ error: '核对失败：' + (e.message || '文件可能损坏') });
+  }
+});
+
+ordersRouter.post('/orders/reconcile-import', requireRole(...ENTRY_ROLES), reconcileUpload, async (req, res) => {
+  const pdfFile = req.files?.pdf?.[0];
+  const xlsFile = req.files?.excel?.[0];
+  if (!pdfFile || !xlsFile) return res.status(400).json({ error: '请同时上传PDF和Excel两个文件' });
+
+  let r;
+  try { r = await reconcile(pdfFile.buffer, xlsFile.buffer); }
+  catch (e) { return res.status(422).json({ error: '核对失败：' + e.message }); }
+  if (!r.ok) return res.status(422).json({ error: r.error });
+  if (!r.all_ok) {
+    const bad = r.checks.filter(c => !c.ok).map(c => c.label).join('、');
+    return res.status(400).json({ error: `核对未通过（${bad} 对不上），不能录入。请回台账核对修正。` });
+  }
+
+  const led = r.ledger;
+  const lines = (led.lines || []).filter(l => Number.isInteger(Number(l.qty)) && Number(l.qty) > 0 && Number(l.qty) <= 2000);
+  if (!lines.length) return res.status(400).json({ error: '这张订单没有有效明细行' });
+  if (led.customer_po) {
+    const dup = db.prepare('SELECT order_no FROM orders WHERE customer_po = ?').get(led.customer_po);
+    if (dup) return res.status(400).json({ error: `客户单号 ${led.customer_po} 已经录过（订单 ${dup.order_no}），不能重复录入。` });
+  }
+
+  const showPrice = canSeePrice(req);
+  db.exec('BEGIN');
+  let orderId, orderNo, custCreated = false;
+  try {
+    const custName = led.customer_name.trim();
+    let cust = db.prepare(`SELECT id FROM customers WHERE replace(name, ' ', '') = ?`).get(custName.replace(/\s/g, ''));
+    if (!cust) {
+      cust = { id: Number(db.prepare('INSERT INTO customers (name) VALUES (?)').run(custName).lastInsertRowid) };
+      custCreated = true;
+    }
+    const odate = today();
+    orderNo = nextOrderNo(odate);
+    orderId = Number(db.prepare(
+      `INSERT INTO orders (order_no, customer_id, customer_po, order_date, due_date, remark, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(orderNo, cust.id, led.customer_po || null, odate, led.due_date || null, 'PDF+台账双证录入', req.user.id).lastInsertRowid);
+    lines.forEach((l, idx) => {
+      const price = showPrice && l.unit_price != null && l.unit_price !== '' ? Number(l.unit_price) : null;
+      const ri = db.prepare(
+        `INSERT INTO order_items (order_id, line_no, part_no, drawing_no, name, spec, material, qty, unit_price, remark)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(orderId, idx + 1, l.part_no || null, l.drawing_no || null, l.name || null, l.spec || null,
+        l.material || null, Number(l.qty), price, l.remark || null);
+      createPieces(orderId, orderNo, Number(ri.lastInsertRowid), Number(l.qty));
+    });
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    console.error('双证录入失败:', e);
+    return res.status(400).json({ error: '录入失败，已回滚：' + e.message });
+  }
+
+  // 把这张PDF留档为订单附件（失败不影响订单已录入）
+  try {
+    const stored = `${Date.now()}_${randomBytes(6).toString('hex')}.pdf`;
+    const origName = Buffer.from(pdfFile.originalname, 'latin1').toString('utf8');
+    writeFileSync(path.join(UPLOAD_DIR, stored), pdfFile.buffer);
+    db.prepare('INSERT INTO attachments (order_id, item_id, orig_name, stored_name, size, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(orderId, null, origName || 'PO.pdf', stored, pdfFile.size, req.user.id);
+  } catch (e) { console.error('PDF留档失败(订单已录入):', e.message); }
+
+  res.json({ ok: true, order_id: orderId, order_no: orderNo, customer_created: custCreated, pieces: lines.reduce((s, l) => s + Number(l.qty), 0) });
 });
 
 ordersRouter.post('/pdf-mappings', requireRole(...ENTRY_ROLES), (req, res) => {

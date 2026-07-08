@@ -32,8 +32,7 @@ export const FIELD_KEYWORDS = {
   _ignore: [
     '客户项目编号', '客项内部编码', '内部下料单号', '内部下料订单号', '内部下料订单编号',
     '优先级别', '单位', '材料来源', '送货地址', '加工状态', '出货备注', '未出货', '已出货',
-    '有无出货', '铣磨进度', '电镀进度', '电脑锣进度', '有无拿材料', '外发有无拿料',
-    '订单金额', '总金额'
+    '有无出货', '铣磨进度', '电镀进度', '电脑锣进度', '有无拿材料', '外发有无拿料'
   ]
 };
 
@@ -149,6 +148,40 @@ function extractMeta(rows) {
   return meta;
 }
 
+function parseNum(s) {
+  const m = String(s).replace(/[¥￥$,\s]/g, '').match(/\d+(\.\d+)?/);
+  return m ? parseFloat(m[0]) : null;
+}
+
+function parseIntQty(s) {
+  const m = String(s).replace(/,/g, '').match(/\d+/);
+  return m ? parseInt(m[0], 10) : null;
+}
+
+// 从PDF抬头抽客户名（购方/需方，排除我方公司名）
+function extractCustomer(rows, ownName) {
+  const text = rows.slice(0, 14).map(r => mergeCells(r.items).map(c => c.text).join(' ')).join('\n');
+  const own = String(ownName || '').replace(/\s/g, '');
+  const clean = name => {
+    const n = String(name).replace(/\s/g, '');
+    if (own && (n === own || n.includes(own) || own.includes(n))) return null;
+    return n;
+  };
+  for (const re of [
+    /购\s*方[\s:：]*([一-龥A-Za-z0-9（）()]{3,40}?(?:公司|厂|部|中心|store|Store))/,
+    /需\s*方[\s:：]*([一-龥A-Za-z0-9（）()]{3,40}?(?:公司|厂|部|中心))/,
+    /(?:购货|收货|需求)单位[\s:：]*([一-龥A-Za-z0-9（）()]{3,40}?(?:公司|厂|部|中心))/
+  ]) {
+    const m = text.match(re);
+    if (m) { const c = clean(m[1]); if (c) return c; }
+  }
+  // 兜底：抬头最靠上的一个"…公司/厂"，且不是我方
+  const top = text.split('\n').slice(0, 5).join(' ');
+  const names = top.match(/[一-龥A-Za-z0-9（）()]{4,40}?(?:公司|厂)/g) || [];
+  for (const nm of names) { const c = clean(nm); if (c) return c; }
+  return null;
+}
+
 const STOP_WORDS = ['合计', '总计', '总 计', '合 计', '备注', '税额', '价税合计', 'TOTAL', '大写', '审核', '制单', '批准'];
 
 function isStopRow(cells) {
@@ -177,7 +210,7 @@ function assignToColumns(cells, columns) {
   return result;
 }
 
-export async function parsePurchaseOrderPdf(buffer) {
+export async function parsePurchaseOrderPdf(buffer, ownName = null) {
   let pages = await extractTextItems(buffer);
   let usedOcr = false;
   const totalItems = pages.reduce((s, p) => s + p.length, 0);
@@ -199,6 +232,7 @@ export async function parsePurchaseOrderPdf(buffer) {
   let headerTexts = null;
   const dataRows = [];
   const allRows = [];
+  let stopTotal = null;
 
   for (const items of pages) {
     const rows = groupRows(items);
@@ -214,7 +248,12 @@ export async function parsePurchaseOrderPdf(buffer) {
     for (let i = startIdx; i < rows.length; i++) {
       const cells = mergeCells(rows[i].items);
       if (cells.length < 2) continue;
-      if (isStopRow(cells)) break;
+      if (isStopRow(cells)) {
+        // 合计行：抓最大的一个金额当单据合计
+        const nums = cells.map(c => parseNum(c.text)).filter(n => n != null && n > 1);
+        if (nums.length) stopTotal = Math.max(stopTotal || 0, ...nums);
+        break;
+      }
       const assigned = assignToColumns(cells, columns);
       if (assigned.filter(v => v !== '').length < 2) continue;
       dataRows.push(assigned);
@@ -245,11 +284,36 @@ export async function parsePurchaseOrderPdf(buffer) {
   const looksLikeData = row => row.some(v => isNumeric(v));
   const cleanRows = dataRows.filter(looksLikeData);
 
+  // 核对摘要：客户 / 总件数 / 总金额
+  const qtyCol = rawGuesses.indexOf('qty');
+  const amtCol = rawGuesses.indexOf('amount');
+  let totalQty = null, totalAmount = null;
+  if (qtyCol >= 0) {
+    totalQty = 0;
+    for (const r of cleanRows) { const q = parseIntQty(r[qtyCol]); if (q) totalQty += q; }
+    if (totalQty === 0) totalQty = null;
+  }
+  if (amtCol >= 0) {
+    totalAmount = 0;
+    for (const r of cleanRows) { const a = parseNum(r[amtCol]); if (a) totalAmount += a; }
+    if (totalAmount === 0) totalAmount = null;
+  }
+  if (totalAmount == null && stopTotal != null) totalAmount = stopTotal;
+
+  const summary = {
+    customer_po: meta.customer_po || null,
+    customer: extractCustomer(allRows, ownName),
+    total_qty: totalQty,
+    total_amount: totalAmount == null ? null : Math.round(totalAmount * 100) / 100,
+    doc_total: stopTotal
+  };
+
   return {
     headers: headerTexts,
     guesses,
     rows: cleanRows,
     meta,
-    ocr: usedOcr
+    ocr: usedOcr,
+    summary
   };
 }
