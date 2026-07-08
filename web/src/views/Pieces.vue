@@ -27,12 +27,16 @@
     <el-table :data="pieces" v-loading="loading" size="small" :row-class-name="rowClass"
       @row-click="r => $router.push(`/orders/${r.order_id}`)" style="cursor:pointer">
       <el-table-column prop="piece_code" label="板件号" width="130" fixed />
+      <el-table-column prop="part_no" label="编号" width="90" show-overflow-tooltip />
       <el-table-column prop="drawing_no" label="图号" width="120" show-overflow-tooltip />
-      <el-table-column prop="item_name" label="品名" width="110" show-overflow-tooltip />
-      <el-table-column prop="spec" label="规格" width="130" show-overflow-tooltip />
-      <el-table-column prop="material" label="材质" width="70" show-overflow-tooltip />
-      <el-table-column prop="customer_name" label="客户" width="120" show-overflow-tooltip />
-      <el-table-column prop="order_no" label="订单号" width="100" />
+      <el-table-column prop="item_name" label="品名" width="105" show-overflow-tooltip />
+      <el-table-column prop="spec" label="规格" width="125" show-overflow-tooltip />
+      <el-table-column prop="material" label="材质" width="66" show-overflow-tooltip />
+      <el-table-column prop="customer_name" label="客户" width="110" show-overflow-tooltip />
+      <el-table-column label="客户PO" width="140" show-overflow-tooltip>
+        <template #default="{ row }"><b>{{ row.customer_po || '—' }}</b></template>
+      </el-table-column>
+      <el-table-column prop="order_no" label="订单号" width="96" />
       <el-table-column label="当前状态" min-width="160">
         <template #default="{ row }">
           <el-tag v-if="row.status_type === 'special'" size="small" class="tag-special">{{ row.status_label }}</el-tag>

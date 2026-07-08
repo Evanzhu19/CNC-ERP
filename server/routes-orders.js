@@ -165,7 +165,7 @@ ordersRouter.get('/pieces/search', (req, res) => {
 
   const rows = db.prepare(`
     SELECT p.id, p.piece_code, p.order_id, p.note, p.wip_stage, p.wip_note, p.flag, p.flag_note,
-      ord.order_no, ord.status AS order_status, ord.due_date,
+      ord.order_no, ord.customer_po, ord.status AS order_status, ord.due_date,
       c.name AS customer_name,
       i.part_no, i.drawing_no, i.name AS item_name, i.spec, i.material,
       (SELECT MAX(s.done_date) FROM piece_stages s WHERE s.piece_id = p.id AND s.stage = 'milling') AS m_milling,
@@ -230,6 +230,7 @@ ordersRouter.get('/pieces/search', (req, res) => {
 
     result.push({
       id: r.id, piece_code: r.piece_code, order_id: r.order_id, order_no: r.order_no,
+      customer_po: r.customer_po,
       order_status: r.order_status, customer_name: r.customer_name, due_date: r.due_date,
       part_no: r.part_no, drawing_no: r.drawing_no, item_name: r.item_name, spec: r.spec, material: r.material,
       note: r.note, status_label: statusLabel, status_type: statusType,
