@@ -618,7 +618,7 @@ async function submitOutsource() {
   ElMessage({ message: `外发单 ${data.batch_no} 已生成（待确认）。货实际发出后，请在打印页点「确认已外发」，板件才算在外。`, type: 'warning', duration: 6000 });
   outsourceDialog.value = false;
   await load();
-  window.open(router.resolve(`/print/outsourcing/${data.id}`).href, '_blank');
+  window.open(router.resolve(`/print/outsourcing/${data.id}/po`).href, '_blank');
 }
 
 async function submitShip() {

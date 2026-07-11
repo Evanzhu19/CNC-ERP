@@ -1,7 +1,8 @@
 <template>
   <div class="print-page" v-if="data">
     <div class="no-print toolbar">
-      <el-button type="primary" @click="print">打印</el-button>
+      <el-button type="primary" @click="print">打印交接单</el-button>
+      <el-button @click="$router.replace(`/print/outsourcing/${$route.params.id}/po`)">切换：外发单（给厂家）</el-button>
       <template v-if="data.batch.status === 'draft' && entry">
         <el-button type="success" @click="confirmSend">✓ 确认已外发</el-button>
         <el-button type="danger" plain @click="cancelBatch">撤销此单</el-button>

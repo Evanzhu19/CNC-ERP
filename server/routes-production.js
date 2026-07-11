@@ -486,7 +486,7 @@ productionRouter.get('/outsourcing', (req, res) => {
 
 productionRouter.get('/outsourcing/:id', (req, res) => {
   const batch = db.prepare(`
-    SELECT o.*, v.name AS vendor_name, v.contact AS vendor_contact, v.phone AS vendor_phone,
+    SELECT o.*, v.name AS vendor_name, v.contact AS vendor_contact, v.phone AS vendor_phone, v.address AS vendor_address,
       u.name AS created_by_name
     FROM outsourcing o
     JOIN vendors v ON v.id = o.vendor_id

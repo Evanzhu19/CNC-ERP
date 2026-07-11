@@ -199,6 +199,13 @@ for (const colDef of ['note TEXT', 'flag TEXT', 'flag_note TEXT', 'flag_date TEX
 }
 db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('stall_warn_days', '2')`).run();
 db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('stall_alert_days', '4')`).run();
+
+try { db.exec('ALTER TABLE vendors ADD COLUMN address TEXT'); } catch { /* 列已存在 */ }
+// 外发单（采购订单版）打印抬头与条款默认值，可在系统设置里改
+db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('out_contact_name', '朱麟铠')`).run();
+db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('out_contact_phone', '13926824659')`).run();
+db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('out_deliver_address', '广东省东莞市清溪镇清溪福龙路82号105室')`).run();
+db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('out_requirements', '铣磨要求：长宽正负0.2，厚度正负0.05等厚，正面精磨，磨削方向一致。（电脑锣要求：严格按图纸要求加工，外形侧面保证光洁度，正面在电脑锣上倒角，孔内无异物，精孔达标，如图纸要求盲孔就要做盲孔）')`).run();
 db.exec(`UPDATE orders SET voided_at = datetime('now','localtime') WHERE status = 'void' AND voided_at IS NULL`);
 
 export function hashPassword(password) {

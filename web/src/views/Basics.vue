@@ -72,6 +72,19 @@
               <span>天红色报警（在外的板同样计算）</span>
             </div>
           </el-form-item>
+          <el-divider content-position="left">外发单（采购订单）打印信息</el-divider>
+          <el-form-item label="我方联系人">
+            <el-input v-model="settings.out_contact_name" style="width: 160px" />
+          </el-form-item>
+          <el-form-item label="我方电话">
+            <el-input v-model="settings.out_contact_phone" style="width: 220px" />
+          </el-form-item>
+          <el-form-item label="交货地址">
+            <el-input v-model="settings.out_deliver_address" placeholder="外发单条款里的交货地址" />
+          </el-form-item>
+          <el-form-item label="加工要求">
+            <el-input v-model="settings.out_requirements" type="textarea" :rows="3" placeholder="打印在外发单明细表下方的红字要求" />
+          </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="saveSettings">保存设置</el-button>
           </el-form-item>
@@ -109,6 +122,7 @@
       </el-form-item>
       <el-form-item label="联系人"><el-input v-model="vendorForm.contact" /></el-form-item>
       <el-form-item label="电话"><el-input v-model="vendorForm.phone" /></el-form-item>
+      <el-form-item label="地址"><el-input v-model="vendorForm.address" placeholder="打印在外发单（采购订单）抬头上" /></el-form-item>
       <el-form-item v-if="vendorForm.id" label="状态"><el-switch v-model="vendorForm.active" active-text="正常" inactive-text="停用" /></el-form-item>
     </el-form>
     <template #footer>
@@ -149,7 +163,11 @@ async function saveSettings() {
   await api.put('/settings', {
     company_name: settings.value.company_name,
     stall_warn_days: settings.value.stall_warn_days,
-    stall_alert_days: settings.value.stall_alert_days
+    stall_alert_days: settings.value.stall_alert_days,
+    out_contact_name: settings.value.out_contact_name,
+    out_contact_phone: settings.value.out_contact_phone,
+    out_deliver_address: settings.value.out_deliver_address,
+    out_requirements: settings.value.out_requirements
   });
   ElMessage.success('设置已保存');
 }
@@ -195,7 +213,7 @@ async function saveCust() {
 function openVendor(row) {
   vendorForm.value = row
     ? { ...row, active: !!row.active, types: String(row.type).split(',').filter(Boolean) }
-    : { name: '', types: ['cnc'], contact: '', phone: '' };
+    : { name: '', types: ['cnc'], contact: '', phone: '', address: '' };
   vendorDialog.value = true;
 }
 

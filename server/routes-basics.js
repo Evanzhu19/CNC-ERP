@@ -52,12 +52,17 @@ basicsRouter.get('/settings', (req, res) => {
     company_name: getSetting('company_name') || '',
     has_logo: !!getSetting('logo_file'),
     stall_warn_days: Number(getSetting('stall_warn_days')) || 2,
-    stall_alert_days: Number(getSetting('stall_alert_days')) || 4
+    stall_alert_days: Number(getSetting('stall_alert_days')) || 4,
+    out_contact_name: getSetting('out_contact_name') || '',
+    out_contact_phone: getSetting('out_contact_phone') || '',
+    out_deliver_address: getSetting('out_deliver_address') || '',
+    out_requirements: getSetting('out_requirements') || ''
   });
 });
 
 basicsRouter.put('/settings', requireRole('admin', 'cnc_manager'), (req, res) => {
-  const { company_name, stall_warn_days, stall_alert_days } = req.body || {};
+  const { company_name, stall_warn_days, stall_alert_days,
+    out_contact_name, out_contact_phone, out_deliver_address, out_requirements } = req.body || {};
   if (!company_name || !String(company_name).trim()) return res.status(400).json({ error: '公司名称不能为空' });
   const warn = Number(stall_warn_days);
   const alert = Number(stall_alert_days);
@@ -66,6 +71,10 @@ basicsRouter.put('/settings', requireRole('admin', 'cnc_manager'), (req, res) =>
   setSetting('company_name', String(company_name).trim());
   setSetting('stall_warn_days', String(warn));
   setSetting('stall_alert_days', String(alert));
+  setSetting('out_contact_name', String(out_contact_name || '').trim());
+  setSetting('out_contact_phone', String(out_contact_phone || '').trim());
+  setSetting('out_deliver_address', String(out_deliver_address || '').trim());
+  setSetting('out_requirements', String(out_requirements || '').trim());
   res.json({ ok: true });
 });
 
@@ -154,13 +163,13 @@ function normVendorTypes(input) {
 }
 
 basicsRouter.post('/vendors', requireRole(...BASICS_ROLES), (req, res) => {
-  const { name, type, contact, phone } = req.body || {};
+  const { name, type, contact, phone, address } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: '厂家名称不能为空' });
   const types = normVendorTypes(type);
   if (!types) return res.status(400).json({ error: '请至少选择一种厂家类型' });
   try {
-    const r = db.prepare('INSERT INTO vendors (name, type, contact, phone) VALUES (?, ?, ?, ?)')
-      .run(String(name).trim(), types, contact || null, phone || null);
+    const r = db.prepare('INSERT INTO vendors (name, type, contact, phone, address) VALUES (?, ?, ?, ?, ?)')
+      .run(String(name).trim(), types, contact || null, phone || null, address || null);
     res.json({ id: Number(r.lastInsertRowid) });
   } catch {
     res.status(400).json({ error: '厂家名称已存在' });
@@ -168,13 +177,13 @@ basicsRouter.post('/vendors', requireRole(...BASICS_ROLES), (req, res) => {
 });
 
 basicsRouter.put('/vendors/:id', requireRole(...BASICS_ROLES), (req, res) => {
-  const { name, type, contact, phone, active } = req.body || {};
+  const { name, type, contact, phone, address, active } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: '厂家名称不能为空' });
   const types = normVendorTypes(type);
   if (!types) return res.status(400).json({ error: '请至少选择一种厂家类型' });
   try {
-    db.prepare('UPDATE vendors SET name = ?, type = ?, contact = ?, phone = ?, active = ? WHERE id = ?')
-      .run(String(name).trim(), types, contact || null, phone || null, active ? 1 : 0, req.params.id);
+    db.prepare('UPDATE vendors SET name = ?, type = ?, contact = ?, phone = ?, address = ?, active = ? WHERE id = ?')
+      .run(String(name).trim(), types, contact || null, phone || null, address || null, active ? 1 : 0, req.params.id);
     res.json({ ok: true });
   } catch {
     res.status(400).json({ error: '厂家名称已存在' });

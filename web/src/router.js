@@ -4,6 +4,7 @@ const routes = [
   { path: '/login', component: () => import('./views/Login.vue') },
   { path: '/print/shipment/:id', component: () => import('./views/ShipPrint.vue') },
   { path: '/print/outsourcing/:id', component: () => import('./views/OutsourcingPrint.vue') },
+  { path: '/print/outsourcing/:id/po', component: () => import('./views/OutsourcingPO.vue') },
   {
     path: '/',
     component: () => import('./views/Layout.vue'),

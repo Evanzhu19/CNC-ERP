@@ -52,6 +52,7 @@
         <template #default="{ row }">
           <el-button v-if="entry && row.status === 'draft'" text type="success" size="small" @click="confirmBatch(row)">确认外发</el-button>
           <el-button v-if="row.status !== 'draft'" text type="primary" size="small" @click="openDetail(row)">明细/回货</el-button>
+          <el-button text type="primary" size="small" @click="printPO(row)">外发单</el-button>
           <el-button text type="primary" size="small" @click="printBatch(row)">交接单</el-button>
           <el-button v-if="entry && row.returned_count === 0" text type="danger" size="small" @click="delBatch(row)">{{ row.status === 'draft' ? '撤销' : '删除' }}</el-button>
         </template>
@@ -148,6 +149,10 @@ async function submitReturn() {
 
 function printBatch(row) {
   window.open(`/print/outsourcing/${row.id}`, '_blank');
+}
+
+function printPO(row) {
+  window.open(`/print/outsourcing/${row.id}/po`, '_blank');
 }
 
 async function unreturnPiece(row) {
