@@ -16,6 +16,9 @@
     </div>
 
     <div class="sheet">
+      <div class="watermark" aria-hidden="true">
+        <span v-for="n in 3" :key="n">{{ companyName }}</span>
+      </div>
       <div class="head">
         <img v-if="hasLogo" :src="logoUrl" class="logo" />
         <h1>{{ companyName || '＿＿＿＿＿＿＿＿' }}</h1>
@@ -102,7 +105,7 @@
       <div class="terms">
         <p>1、交货地址：{{ settings.out_deliver_address }} ，{{ companyName }}</p>
         <p>2、运费承担：供方承担　　　　3、运输方式：公路运输、物流</p>
-        <p>4、发票税率：13%增值税　□是　□否</p>
+        <p>4、发票税率：13%增值税　☑是　□否</p>
         <p>5、风险承担：货物交付前一切风险均由供方承担</p>
         <p>6、货物验收：货物到货后，需方按验收标准对货物进行检测验收，如有问题或数量短缺问题，供方应在得到需方通知后根据需方要求时间派人到需方处理相关事宜，根据问题严重程度，需方可以采取拒绝接受或限期补货，货款折扣等方式处理，供方经催告不处理的，合同自动解除，需方有权向供方追索相应的损失。</p>
         <p>7、质量要求：供方提供产品的材质、尺寸、生产工艺、品质等，必须满足需方提出的书面要求。产品符合行业标准，以及供需双方签字确认后的样板要求，品质不在验收时，按标准检验，若有不良品比例超允收标准时，我司有权批退回。</p>
@@ -193,7 +196,9 @@ onBeforeUnmount(() => { if (pageStyle) pageStyle.remove(); });
 <style scoped>
 .print-page { background: #eee; min-height: 100vh; padding: 20px; }
 .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; max-width: 1080px; margin-left: auto; margin-right: auto; }
-.sheet { background: #fff; max-width: 1080px; margin: 0 auto; padding: 28px 36px; font-size: 13px; color: #000; }
+.sheet { background: #fff; max-width: 1080px; margin: 0 auto; padding: 28px 36px; font-size: 13px; color: #000; position: relative; overflow: hidden; }
+.watermark { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: space-around; align-items: center; pointer-events: none; }
+.watermark span { transform: rotate(-22deg); font-size: 46px; font-weight: bold; letter-spacing: 8px; color: rgba(0, 0, 0, 0.06); white-space: nowrap; }
 .head { display: flex; align-items: center; justify-content: center; gap: 14px; }
 .logo { height: 44px; }
 h1 { text-align: center; font-size: 26px; margin: 0; letter-spacing: 2px; }
