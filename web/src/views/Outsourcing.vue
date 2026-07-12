@@ -69,7 +69,7 @@
         <span v-if="current.batch.note">。备注：{{ current.batch.note }}</span>
       </p>
       <el-table :data="current.pieces" size="small" border @selection-change="s => returnSel = s" max-height="380">
-        <el-table-column type="selection" width="40" :selectable="r => entry && !r.returned_date" />
+        <el-table-column type="selection" width="40" :selectable="() => entry" />
         <el-table-column prop="piece_code" label="板件号" width="120" />
         <el-table-column prop="order_no" label="订单号" width="100" />
         <el-table-column prop="customer_name" label="客户" width="120" show-overflow-tooltip />
@@ -89,12 +89,13 @@
       <div v-if="entry" style="margin-top: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
         <span>回货日期：</span>
         <el-date-picker v-model="returnDate" type="date" value-format="YYYY-MM-DD" style="width: 150px" />
-        <el-button type="primary" :disabled="!returnSel.length" @click="submitReturn">登记回货（{{ returnSel.length }} 件）</el-button>
+        <el-button type="primary" :disabled="!selOut.length" @click="submitReturn">登记回货（{{ selOut.length }} 件）</el-button>
         <el-button v-if="String(current.batch.type).includes('plating') && current.batch.status === 'open'"
-          type="success" plain :disabled="!returnSel.length" @click="directShip">直送客户出货（{{ returnSel.length }} 件）</el-button>
-        <el-button type="warning" plain :disabled="!returnSel.length" @click="removePieces">撤件（{{ returnSel.length }} 件）</el-button>
+          type="success" plain :disabled="!selOut.length" @click="directShip">直送客户出货（{{ selOut.length }} 件）</el-button>
+        <el-button type="warning" plain :disabled="!selOut.length" @click="removePieces">撤件（{{ selOut.length }} 件）</el-button>
+        <el-button type="danger" plain :disabled="!selReturned.length" @click="unreturnBatch">撤回货（{{ selReturned.length }} 件）</el-button>
         <div style="color:#909399; font-size: 12px; width: 100%;">
-          回货登记后状态自动流转：CNC外发回货自动标CNC完成、精磨外发回货自动标精磨完成、电镀回货自动标电镀回厂。「撤件」用于开了单但实际没拉走的板：撤出后恢复待外发状态，可加入下一张外发单。
+          回货登记后状态自动流转：CNC外发回货自动标CNC完成、精磨外发回货自动标精磨完成、电镀回货自动标电镀回厂。「撤件」用于开了单但实际没拉走的板：撤出后恢复待外发状态。「撤回货」用于登记错了的板：勾选已回货的板批量撤销回货登记。前三个按钮只对勾中的"在外"板生效，撤回货只对勾中的"已回货"板生效。
         </div>
       </div>
     </div>
@@ -102,7 +103,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, canEntry } from '../api.js';
 import { outTypeLabel } from '../consts.js';
@@ -117,6 +118,9 @@ const detailDialog = ref(false);
 const current = ref(null);
 const returnSel = ref([]);
 const returnDate = ref(today);
+// 勾选自动按状态分流：在外的走登记回货/直送/撤件，已回货的走撤回货
+const selOut = computed(() => returnSel.value.filter(p => !p.returned_date));
+const selReturned = computed(() => returnSel.value.filter(p => p.returned_date));
 
 async function load() {
   loading.value = true;
@@ -139,7 +143,7 @@ async function openDetail(row) {
 
 async function submitReturn() {
   await api.post(`/outsourcing/${current.value.batch.id}/return`, {
-    piece_ids: returnSel.value.map(p => p.piece_id),
+    piece_ids: selOut.value.map(p => p.piece_id),
     returned_date: returnDate.value
   });
   ElMessage.success('回货已登记');
@@ -166,13 +170,28 @@ async function unreturnPiece(row) {
   load();
 }
 
+async function unreturnBatch() {
+  const n = selReturned.value.length;
+  const codes = selReturned.value.slice(0, 5).map(p => p.piece_code).join('、') + (n > 5 ? ` 等${n}件` : '');
+  await ElMessageBox.confirm(
+    `批量撤销 ${n} 件的回货登记？（${codes}）这些板恢复"在外"状态，回货时自动标的工序会一并撤掉。`,
+    '批量撤回货', { type: 'warning', confirmButtonText: `撤回货（${n}件）` }
+  );
+  await api.post(`/outsourcing/${current.value.batch.id}/unreturn`, {
+    piece_ids: selReturned.value.map(p => p.piece_id)
+  });
+  ElMessage.success(`已撤销 ${n} 件的回货登记`);
+  await openDetail({ id: current.value.batch.id });
+  load();
+}
+
 async function directShip() {
   const { value: shipDate } = await ElMessageBox.prompt(
-    `确认这 ${returnSel.value.length} 件板由电镀厂（${current.value.batch.vendor_name}）直接送到客户？将一步完成"电镀回厂标记+出货记录"，送货单自动注明直送。请输入出货日期：`,
+    `确认这 ${selOut.value.length} 件板由电镀厂（${current.value.batch.vendor_name}）直接送到客户？将一步完成"电镀回厂标记+出货记录"，送货单自动注明直送。请输入出货日期：`,
     '电镀厂直送客户', { inputValue: new Date().toISOString().slice(0, 10), confirmButtonText: '确认直送出货' }
   );
   const { data } = await api.post(`/outsourcing/${current.value.batch.id}/direct-ship`, {
-    piece_ids: returnSel.value.map(p => p.piece_id),
+    piece_ids: selOut.value.map(p => p.piece_id),
     ship_date: shipDate
   });
   const nos = data.shipments.map(s => s.ship_no + (s.closed ? '（订单已结案）' : '')).join('、');
@@ -182,13 +201,13 @@ async function directShip() {
 }
 
 async function removePieces() {
-  const codes = returnSel.value.map(p => p.piece_code).join('、');
+  const codes = selOut.value.map(p => p.piece_code).join('、');
   await ElMessageBox.confirm(
     `把 ${codes} 从这张外发单撤出？撤出后这些板恢复"待外发"状态，可以加入下一张外发单。（用于开了单但实际没拉走的情况）`,
     '确认撤件', { type: 'warning', confirmButtonText: '确认撤件' }
   );
   const { data } = await api.post(`/outsourcing/${current.value.batch.id}/remove`, {
-    piece_ids: returnSel.value.map(p => p.piece_id)
+    piece_ids: selOut.value.map(p => p.piece_id)
   });
   if (data.batch_deleted) {
     ElMessage.success('已撤件，该外发单已无板件，单据已删除');
