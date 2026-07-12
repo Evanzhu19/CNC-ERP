@@ -55,7 +55,7 @@
 
   <el-dialog v-model="reconcileDialog" title="PDF+台账 双证录入" width="720px" top="6vh">
     <el-alert type="info" :closable="false" style="margin-bottom: 14px"
-      title="同时上传：客户的PDF采购单 + Excel台账。系统按PO号在台账里找到对应订单，核对 PO/客户/总件数/总金额，全部对上才准录入。件数或金额对不上（比如台账少录了）会拦下来。" />
+      title="同时上传：客户的PDF采购单 + Excel台账。系统按PO号在台账里找到对应订单，核对 PO / 客户 / 每个图号的件数（金额不参与核对）。哪个图号件数对不上会红字指出来，对不上不给录。" />
     <div style="display:flex; gap:16px; margin-bottom:14px;">
       <div style="flex:1">
         <div style="margin-bottom:6px; color:#606266">① 客户PDF采购单</div>
@@ -93,8 +93,8 @@
         <tbody>
           <tr v-for="c in recResult.checks" :key="c.key" :class="{ bad: !c.ok }">
             <td>{{ c.label }}</td>
-            <td>{{ c.missing && c.missing_side !== 'ledger' ? '（PDF没抽到）' : fmtVal(c) }}</td>
-            <td>{{ c.missing_side === 'ledger' ? '（台账没金额列）' : fmtLedger(c) }}</td>
+            <td>{{ c.missing ? '（PDF没抽到）' : fmtVal(c) }}</td>
+            <td>{{ fmtLedger(c) }}</td>
             <td>
               <span v-if="c.ok" style="color:#67c23a">✓ 一致</span>
               <span v-else style="color:#f56c6c">✗ {{ c.missing ? '缺字段' : '不符' }}</span>
@@ -102,6 +102,31 @@
           </tr>
         </tbody>
       </table>
+
+      <div v-if="recResult.line_checks" style="margin-top:12px">
+        <div style="margin-bottom:6px; color:#606266; font-size:13px">图号件数逐行核对：</div>
+        <table class="rec-table">
+          <thead><tr><th>图号</th><th style="width:110px">PDF采购单</th><th style="width:110px">Excel台账</th><th style="width:140px">结果</th></tr></thead>
+          <tbody>
+            <tr v-for="lc in recResult.line_checks" :key="lc.drawing_no" :class="{ bad: !lc.ok }">
+              <td>{{ lc.drawing_no }}</td>
+              <td>{{ lc.pdf_qty }} 件</td>
+              <td>{{ lc.ledger_qty }} 件</td>
+              <td>
+                <span v-if="lc.ok" style="color:#67c23a">✓ 一致</span>
+                <span v-else style="color:#f56c6c">✗ 差{{ Math.abs(lc.pdf_qty - lc.ledger_qty) }}件{{ lc.pdf_qty === 0 ? '（PDF里没这图号）' : '' }}</span>
+              </td>
+            </tr>
+            <tr v-for="(ex, i) in recResult.pdf_extra || []" :key="'ex' + i" class="bad">
+              <td>{{ ex.text }}</td>
+              <td>{{ ex.qty }} 件</td>
+              <td>—</td>
+              <td><span style="color:#f56c6c">✗ 台账里没有这行</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <div style="margin-top:10px; color:#909399; font-size:13px">
         台账对应订单：{{ recResult.ledger.customer_name }} / {{ recResult.ledger.lines.length }}行 / 交期{{ recResult.ledger.due_date || '—' }}。录入以台账为准（含图号、材质、外发等内部信息），PDF会自动留档为附件。
       </div>
@@ -226,12 +251,10 @@ function pickFile(e, which) {
 }
 
 function fmtVal(c) {
-  if (c.key === 'amount' && c.pdf != null) return '¥' + Number(c.pdf).toLocaleString('zh-CN', { minimumFractionDigits: 2 });
   if (c.key === 'qty') return c.pdf + ' 件';
   return c.pdf ?? '';
 }
 function fmtLedger(c) {
-  if (c.key === 'amount' && c.ledger != null) return '¥' + Number(c.ledger).toLocaleString('zh-CN', { minimumFractionDigits: 2 });
   if (c.key === 'qty') return c.ledger + ' 件';
   return c.ledger ?? '';
 }

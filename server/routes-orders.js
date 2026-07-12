@@ -760,12 +760,39 @@ async function reconcile(pdfBuffer, xlsBuffer) {
   if (s.total_qty == null) checks.push({ key: 'qty', label: '总件数', pdf: null, ledger: led.total_qty, ok: false, missing: true });
   else checks.push({ key: 'qty', label: '总件数', pdf: s.total_qty, ledger: led.total_qty, ok: s.total_qty === led.total_qty });
 
-  if (s.total_amount == null) checks.push({ key: 'amount', label: '总金额', pdf: null, ledger: led.total_amount, ok: false, missing: true });
-  else if (led.total_amount == null) checks.push({ key: 'amount', label: '总金额', pdf: s.total_amount, ledger: null, ok: false, missing: true, missing_side: 'ledger' });
-  else checks.push({ key: 'amount', label: '总金额', pdf: s.total_amount, ledger: led.total_amount, ok: Math.round(s.total_amount * 100) === Math.round(led.total_amount * 100) });
+  // 逐图号件数核对（金额不参与：台账内部不填金额）
+  const ledMap = new Map();
+  for (const l of led.lines) {
+    if (!l.drawing_no || !String(l.drawing_no).trim()) {
+      return { ok: false, error: `台账 PO=${led.customer_po} 里有明细行没填图号，无法按图号核对件数，请在台账补上图号后重新上传。` };
+    }
+    const k = norm(l.drawing_no);
+    ledMap.set(k, (ledMap.get(k) || 0) + Number(l.qty || 0));
+  }
+  const qtyIdx = pdf.guesses.indexOf('qty');
+  if (qtyIdx < 0) return { ok: false, error: 'PDF里没识别出「数量」列，无法按图号核对件数。' };
+  const intQty = v => { const m = String(v ?? '').replace(/,/g, '').match(/^\s*(\d+)\s*$/); return m ? parseInt(m[1], 10) : null; };
+  const pdfMap = new Map();
+  const pdfExtra = [];
+  for (const row of pdf.rows) {
+    const q = intQty(row[qtyIdx]);
+    if (!q) continue;
+    const hit = row.map(c => norm(c)).find(c => c && ledMap.has(c));
+    if (hit) pdfMap.set(hit, (pdfMap.get(hit) || 0) + q);
+    else pdfExtra.push({ text: row.filter(c => String(c).trim()).slice(0, 5).join(' ｜ '), qty: q });
+  }
+  const lineChecks = [];
+  const seen = new Set();
+  for (const l of led.lines) {
+    const k = norm(l.drawing_no);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const pq = pdfMap.get(k) || 0;
+    lineChecks.push({ drawing_no: l.drawing_no, pdf_qty: pq, ledger_qty: ledMap.get(k), ok: pq === ledMap.get(k) });
+  }
 
-  const all_ok = checks.every(c => c.ok);
-  return { ok: true, all_ok, checks, ledger: led, pdf: s };
+  const all_ok = checks.every(c => c.ok) && lineChecks.every(c => c.ok) && pdfExtra.length === 0;
+  return { ok: true, all_ok, checks, line_checks: lineChecks, pdf_extra: pdfExtra, ledger: led, pdf: s };
 }
 
 const reconcileUpload = pdfUpload.fields([{ name: 'pdf', maxCount: 1 }, { name: 'excel', maxCount: 1 }]);
@@ -779,10 +806,9 @@ ordersRouter.post('/orders/reconcile', requireRole(...ENTRY_ROLES), reconcileUpl
     if (!r.ok) return res.status(422).json({ error: r.error });
     const showPrice = canSeePrice(req);
     if (!showPrice) {
-      r.checks = r.checks.filter(c => c.key !== 'amount');
-      if (r.ledger) for (const l of r.ledger.lines) delete l.unit_price;
+      if (r.ledger) for (const l of r.ledger.lines) { delete l.unit_price; delete l.amount; }
       if (r.ledger) delete r.ledger.total_amount;
-      if (r.pdf) delete r.pdf.total_amount;
+      if (r.pdf) { delete r.pdf.total_amount; delete r.pdf.doc_total; }
     }
     const dup = r.ledger.customer_po ? db.prepare('SELECT order_no FROM orders WHERE customer_po = ?').get(r.ledger.customer_po) : null;
     res.json({ ...r, po_exists: dup ? dup.order_no : null });
@@ -802,8 +828,9 @@ ordersRouter.post('/orders/reconcile-import', requireRole(...ENTRY_ROLES), recon
   catch (e) { return res.status(422).json({ error: '核对失败：' + e.message }); }
   if (!r.ok) return res.status(422).json({ error: r.error });
   if (!r.all_ok) {
-    const bad = r.checks.filter(c => !c.ok).map(c => c.label).join('、');
-    return res.status(400).json({ error: `核对未通过（${bad} 对不上），不能录入。请回台账核对修正。` });
+    const bad = r.checks.filter(c => !c.ok).map(c => c.label);
+    if (r.line_checks?.some(c => !c.ok) || r.pdf_extra?.length) bad.push('图号件数');
+    return res.status(400).json({ error: `核对未通过（${[...new Set(bad)].join('、')} 对不上），不能录入。请回台账核对修正。` });
   }
 
   const led = r.ledger;
