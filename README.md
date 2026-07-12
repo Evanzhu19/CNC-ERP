@@ -66,25 +66,32 @@ netsh advfirewall firewall add rule name="CNC ERP" dir=in action=allow protocol=
    ```
 4. 浏览器访问 `http://CT的IP:3000`。以后升级：替换代码文件后再执行一次上面这条命令，`data` 目录挂在容器外面，数据不受影响。
 
-### 国内网络拉取/构建加速
+### 国内网络：默认已配好镜像源
 
-代码本身没有"墙外私有下载"的坑：依赖全部来自 npm 官方仓库（无编译、无 GitHub Release 下载），
+**docker-compose 默认就走国内源**（基础镜像走 DaoCloud、npm 走 npmmirror），国内主机上直接
+`docker compose up -d --build` 即可，什么都不用配。想换回官方源：
+`NODE_IMAGE=node:24-alpine NPM_REGISTRY=https://registry.npmjs.org docker compose build`。
+
+代码本身没有"墙外私有下载"的坑：依赖全部来自 npm 仓库（无编译、无 GitHub Release 下载），
 OCR 词库（`server/tessdata/`）和 PDF 字体映射都打包在仓库/依赖里，**运行时完全不需要联网**。
-国内网络只有三个下载环节可能慢或失败，对策如下：
 
-1. **git clone 慢**：直接重试几次一般能过；实在不行在能翻的机器上 clone 好，整个文件夹拷过去（不含 node_modules）
-2. **Docker Hub 拉不动基础镜像**（最常见）：两种办法任选
-   - 给 Docker 配国内镜像加速器：编辑 `/etc/docker/daemon.json` 加 `{"registry-mirrors": ["https://docker.m.daocloud.io", "https://docker.1ms.run"]}` 后 `systemctl restart docker`
-   - 或者构建时直接换镜像地址（不用改任何文件）：
-     ```
-     NODE_IMAGE=docker.m.daocloud.io/library/node:24-alpine \
-     NPM_REGISTRY=https://registry.npmmirror.com \
-     docker compose up -d --build
-     ```
-3. **npm 装依赖慢**：上面的 `NPM_REGISTRY=https://registry.npmmirror.com` 已覆盖 Docker 构建；
-   不用 Docker 裸跑时执行 `npm config set registry https://registry.npmmirror.com` 再 `npm ci`
+- **git clone 慢**：重试几次一般能过；不行就在本机 clone 好整个文件夹拷过去（不含 node_modules 和 web/dist）
+- **不用 Docker 裸跑时**：`npm config set registry https://registry.npmmirror.com` 再 `npm ci`
 
-不传这些参数则一切走官方源，行为和以前完全一样。
+### 零下载迁移：本机构建好的镜像直接拷到服务器
+
+服务器网络再差也不怕——在已经构建成功的电脑上导出镜像，服务器一个字节都不用下载：
+
+```bash
+# 本机（Windows PowerShell 也一样）：导出镜像（约200MB压缩包）
+docker save cnc-erp:latest -o cnc-erp.tar
+
+# 把 cnc-erp.tar、docker-compose.yml、data文件夹 拷到服务器同一目录，然后：
+docker load -i cnc-erp.tar
+docker compose up -d --no-build
+```
+
+以后升级也走这条路：本机构建 → save → 拷过去 → load → `docker compose up -d --no-build`。
 
 时区已在镜像里设为 Asia/Shanghai（影响单号年月和备份日期，别去掉）。
 数据库就是 `data/erp.sqlite` 单文件（SQLite），这个规模不需要单独的数据库服务；

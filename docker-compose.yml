@@ -3,10 +3,12 @@ services:
     build:
       context: .
       args:
-        # 国内网络：NODE_IMAGE=docker.m.daocloud.io/library/node:24-alpine NPM_REGISTRY=https://registry.npmmirror.com docker compose up -d --build
-        NODE_IMAGE: ${NODE_IMAGE:-node:24-alpine}
-        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        # 默认已用国内源（DaoCloud镜像 + npmmirror），国内主机直接 docker compose up -d --build
+        # 如需换回官方源：NODE_IMAGE=node:24-alpine NPM_REGISTRY=https://registry.npmjs.org docker compose build
+        NODE_IMAGE: ${NODE_IMAGE:-docker.m.daocloud.io/library/node:24-alpine}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
         ALPINE_MIRROR: ${ALPINE_MIRROR:-}
+    image: cnc-erp:latest
     container_name: cnc-erp
     ports:
       - "3000:3000"
