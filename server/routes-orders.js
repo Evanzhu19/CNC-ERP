@@ -794,6 +794,18 @@ ordersRouter.get('/attachments/:id/download', (req, res) => {
   res.download(fp, a.orig_name);
 });
 
+ordersRouter.put('/attachments/:id', requireRole(...ENTRY_ROLES), (req, res) => {
+  const a = db.prepare('SELECT * FROM attachments WHERE id = ?').get(req.params.id);
+  if (!a) return res.status(404).json({ error: '附件不存在' });
+  const itemId = req.body?.item_id ? Number(req.body.item_id) : null;
+  if (itemId) {
+    const it = db.prepare('SELECT id FROM order_items WHERE id = ? AND order_id = ?').get(itemId, a.order_id);
+    if (!it) return res.status(400).json({ error: '该图号明细不在此订单里' });
+  }
+  db.prepare('UPDATE attachments SET item_id = ? WHERE id = ?').run(itemId, a.id);
+  res.json({ ok: true });
+});
+
 ordersRouter.delete('/attachments/:id', requireRole(...ENTRY_ROLES), (req, res) => {
   const a = db.prepare('SELECT * FROM attachments WHERE id = ?').get(req.params.id);
   if (!a) return res.status(404).json({ error: '附件不存在' });

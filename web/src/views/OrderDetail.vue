@@ -148,30 +148,54 @@
           <template #header>
             <div style="display: flex; align-items: center;">
               <b>图纸与附件</b>
+              <el-tag size="small" :type="drawingDone === detail.items.length ? 'success' : 'danger'" style="margin-left: 8px">
+                图纸 {{ drawingDone }}/{{ detail.items.length }}
+              </el-tag>
               <div style="flex: 1"></div>
               <el-upload v-if="entry" :action="`/api/orders/${detail.order.id}/attachments`" :headers="{ Authorization: 'Bearer ' + tk }"
                 name="files" multiple :show-file-list="false" :on-success="load" :on-error="uploadError">
-                <el-button size="small" type="primary" plain>上传附件</el-button>
+                <el-button size="small" plain>上传订单附件</el-button>
               </el-upload>
             </div>
           </template>
-          <el-table :data="detail.attachments" size="small">
-            <el-table-column prop="orig_name" label="文件名" show-overflow-tooltip>
-              <template #default="{ row }">
-                <a :href="`/api/attachments/${row.id}/download?token=${tk}`" target="_blank" style="color: #409eff; text-decoration: none">{{ row.orig_name }}</a>
-              </template>
-            </el-table-column>
-            <el-table-column prop="uploaded_by_name" label="上传人" width="90" />
-            <el-table-column label="大小" width="90">
-              <template #default="{ row }">{{ (row.size / 1024 / 1024).toFixed(2) }} MB</template>
-            </el-table-column>
-            <el-table-column v-if="entry" width="60">
-              <template #default="{ row }">
-                <el-button text type="danger" size="small" @click="delAttachment(row)">删</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <el-empty v-if="!detail.attachments.length" description="还没有上传图纸" :image-size="50" />
+
+          <div v-for="it in detail.items" :key="it.id" class="draw-row">
+            <div class="draw-head">
+              <span class="draw-line">#{{ it.line_no }}</span>
+              <b>{{ it.drawing_no || it.name || '（无图号）' }}</b>
+              <span v-if="it.drawing_no && it.name" class="draw-name">{{ it.name }}</span>
+              <el-tag v-if="(attachByItem[it.id] || []).length" type="success" size="small" effect="plain">
+                已传 {{ attachByItem[it.id].length }} 个
+              </el-tag>
+              <el-tag v-else type="danger" size="small">未传图纸</el-tag>
+              <div style="flex: 1"></div>
+              <el-upload v-if="entry" :action="`/api/orders/${detail.order.id}/attachments`" :headers="{ Authorization: 'Bearer ' + tk }"
+                :data="{ item_id: it.id }" name="files" multiple :show-file-list="false" :on-success="load" :on-error="uploadError">
+                <el-button text type="primary" size="small">传图纸</el-button>
+              </el-upload>
+            </div>
+            <div v-for="a in attachByItem[it.id] || []" :key="a.id" class="draw-file">
+              <a :href="`/api/attachments/${a.id}/download?token=${tk}`" target="_blank">{{ a.orig_name }}</a>
+              <span class="draw-meta">{{ (a.size / 1024 / 1024).toFixed(2) }} MB · {{ a.uploaded_by_name }}</span>
+              <el-button v-if="entry" text type="danger" size="small" @click="delAttachment(a)">删</el-button>
+            </div>
+          </div>
+
+          <template v-if="orderAttachments.length">
+            <el-divider content-position="left" style="margin: 10px 0 6px">
+              <span style="font-size: 12px; color: #909399">订单附件（不属于某个图号，如客户PO留档）</span>
+            </el-divider>
+            <div v-for="a in orderAttachments" :key="a.id" class="draw-file">
+              <a :href="`/api/attachments/${a.id}/download?token=${tk}`" target="_blank">{{ a.orig_name }}</a>
+              <span class="draw-meta">{{ (a.size / 1024 / 1024).toFixed(2) }} MB · {{ a.uploaded_by_name }}</span>
+              <el-select v-if="entry" placeholder="归到图号" size="small" style="width: 150px"
+                :model-value="null" @change="v => assignAttachment(a, v)">
+                <el-option v-for="it in detail.items" :key="it.id" :value="it.id"
+                  :label="`#${it.line_no} ${it.drawing_no || it.name || ''}`" />
+              </el-select>
+              <el-button v-if="entry" text type="danger" size="small" @click="delAttachment(a)">删</el-button>
+            </div>
+          </template>
         </el-card>
       </el-col>
       <el-col :span="12">
@@ -641,6 +665,29 @@ async function delShipment(row) {
   load();
 }
 
+const attachByItem = computed(() => {
+  const m = {};
+  if (!detail.value) return m;
+  for (const a of detail.value.attachments) {
+    if (a.item_id) (m[a.item_id] ||= []).push(a);
+  }
+  return m;
+});
+
+const orderAttachments = computed(() =>
+  detail.value ? detail.value.attachments.filter(a => !a.item_id) : []
+);
+
+const drawingDone = computed(() =>
+  detail.value ? detail.value.items.filter(it => (attachByItem.value[it.id] || []).length).length : 0
+);
+
+async function assignAttachment(a, itemId) {
+  await api.put(`/attachments/${a.id}`, { item_id: itemId });
+  ElMessage.success('已归到对应图号');
+  load();
+}
+
 async function delAttachment(row) {
   await ElMessageBox.confirm(`删除附件「${row.orig_name}」？`, '确认删除', { type: 'warning' });
   await api.delete(`/attachments/${row.id}`);
@@ -677,4 +724,12 @@ onMounted(async () => {
 .tag-special { background: #f3eefc !important; border-color: #b39ddb !important; color: #6a3fb5 !important; }
 :deep(.stall-warn) td { background: #fdf6e3 !important; }
 :deep(.stall-alert) td { background: #fdeaea !important; }
+.draw-row { padding: 6px 0; border-bottom: 1px dashed #ebeef5; }
+.draw-row:last-of-type { border-bottom: none; }
+.draw-head { display: flex; align-items: center; gap: 8px; }
+.draw-line { color: #909399; font-size: 12px; width: 26px; }
+.draw-name { color: #909399; font-size: 12px; }
+.draw-file { display: flex; align-items: center; gap: 10px; padding: 3px 0 3px 34px; font-size: 13px; }
+.draw-file a { color: #409eff; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.draw-meta { color: #909399; font-size: 12px; flex-shrink: 0; }
 </style>
