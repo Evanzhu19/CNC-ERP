@@ -521,6 +521,18 @@ async function fetchPieces() {
   pieces.value = data.pieces;
   piecesTotal.value = data.total;
   shippedCount.value = data.shipped_count;
+  // 选中的行同步为刷新后的新对象，否则报工/标记后按钮状态（如"解除标记"）读到旧数据
+  if (selected.value.length) {
+    const prevIds = new Set(selected.value.map(s => s.id));
+    const fresh = data.pieces.filter(p => prevIds.has(p.id));
+    if (fresh.length === prevIds.size) {
+      selected.value = fresh;
+    } else {
+      // 有选中行已不在当前列表（被筛掉/已出货），清空避免幽灵选中
+      pieceTable.value?.clearSelection();
+      selected.value = [];
+    }
+  }
 }
 
 let pieceTimer = null;
