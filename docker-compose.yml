@@ -1,6 +1,12 @@
 services:
   erp:
-    build: .
+    build:
+      context: .
+      args:
+        # 国内网络：NODE_IMAGE=docker.m.daocloud.io/library/node:24-alpine NPM_REGISTRY=https://registry.npmmirror.com docker compose up -d --build
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-alpine}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-}
     container_name: cnc-erp
     ports:
       - "3000:3000"
