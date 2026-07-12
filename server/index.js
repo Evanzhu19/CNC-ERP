@@ -63,6 +63,31 @@ setInterval(() => {
   try { db.prepare(`DELETE FROM sessions WHERE expires_at < datetime('now')`).run(); } catch {}
 }, 3600 * 1000);
 
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`CNC ERP 已启动：http://localhost:${PORT}（局域网内用本机IP访问）`);
 });
+
+// 优雅关机：停止接新请求 → 把 WAL 检查点写回主库 → 关库退出
+let shuttingDown = false;
+function shutdown(sig) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[关机] 收到 ${sig}，正在保存数据…`);
+  server.close(() => {
+    try {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      db.close();
+      console.log('[关机] 数据库已安全关闭');
+    } catch (e) {
+      console.error('[关机] 关库出错:', e.message);
+    }
+    process.exit(0);
+  });
+  // 3秒内没关完（长连接挂着）也强制走人，库已checkpoint过
+  setTimeout(() => {
+    try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); db.close(); } catch {}
+    process.exit(0);
+  }, 3000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

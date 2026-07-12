@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, unlinkSync, writeFileSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { db, UPLOAD_DIR, today, verifyPassword, lastActExpr } from './db.js';
 import { requireRole, canSeePrice, ENTRY_ROLES } from './auth.js';
 import { parsePurchaseOrderPdf } from './pdf-parse.js';
@@ -239,6 +239,51 @@ ordersRouter.get('/orders/:id', (req, res) => {
   if (!order) return res.status(404).json({ error: '订单不存在' });
 
   const items = db.prepare('SELECT * FROM order_items WHERE order_id = ? ORDER BY line_no').all(order.id);
+  const attachments = db.prepare(`
+    SELECT a.id, a.item_id, a.orig_name, a.size, a.uploaded_at, u.name AS uploaded_by_name
+    FROM attachments a LEFT JOIN users u ON u.id = a.uploaded_by
+    WHERE a.order_id = ? ORDER BY a.id
+  `).all(order.id);
+  const shipments = db.prepare(`
+    SELECT s.id, s.ship_no, s.ship_date, s.note, u.name AS created_by_name,
+      (SELECT COUNT(*) FROM shipment_pieces sp WHERE sp.shipment_id = s.id) AS piece_count
+    FROM shipments s LEFT JOIN users u ON u.id = s.created_by
+    WHERE s.order_id = ? ORDER BY s.id
+  `).all(order.id);
+
+  const showPrice = canSeePrice(req);
+  const itemsOut = items.map(it => {
+    const row = { ...it };
+    if (!showPrice) { delete row.unit_price; }
+    else { row.amount = it.unit_price != null ? it.unit_price * it.qty : null; }
+    return row;
+  });
+  if (!showPrice) delete order.amount;
+  const amount = showPrice
+    ? items.reduce((s, it) => s + (it.unit_price != null ? it.unit_price * it.qty : 0), 0)
+    : undefined;
+
+  res.json({ order: { ...order, ...(showPrice ? { amount } : {}) }, items: itemsOut, attachments, shipments });
+});
+
+// 订单内板件行：状态判定/关键词筛选/状态筛选/滞留分级全部在服务端算好，前端只渲染
+const OUT_PROC_LABELS = { milling: '铣磨', cnc: 'CNC', grinding: '精磨', plating: '电镀', other: '其他' };
+const WIP_LABELS = { milling: '铣磨中', cnc: 'CNC加工中', grinding: '精磨中' };
+const PIECE_FLAG_LABELS = { repair: '维修中', rework: '返工中', redraw: '改图暂停' };
+const outTypeLabel = csv => String(csv || '').split(',').filter(Boolean).map(t => OUT_PROC_LABELS[t] || t).join('+');
+const outDoingLabel = csv => {
+  const parts = String(csv || '').split(',').filter(Boolean);
+  return parts.length === 1 && parts[0] === 'plating' ? '电镀中' : outTypeLabel(csv) + '外发';
+};
+
+ordersRouter.get('/orders/:id/pieces', (req, res) => {
+  const order = db.prepare('SELECT id, status FROM orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: '订单不存在' });
+  const q = String(req.query.q || '').trim().toLowerCase();
+  const statusFilter = String(req.query.status || '').trim();
+
+  const items = db.prepare('SELECT * FROM order_items WHERE order_id = ? ORDER BY line_no').all(order.id);
+  const itemMap = new Map(items.map(i => [i.id, i]));
   const pieces = db.prepare(`
     SELECT p.*, ${lastActExpr('p', 'o')} AS last_act
     FROM pieces p JOIN orders o ON o.id = p.order_id
@@ -262,17 +307,10 @@ ordersRouter.get('/orders/:id', (req, res) => {
     FROM shipment_pieces sp JOIN shipments s ON s.id = sp.shipment_id
     WHERE s.order_id = ?
   `).all(order.id);
-  const attachments = db.prepare(`
-    SELECT a.id, a.item_id, a.orig_name, a.size, a.uploaded_at, u.name AS uploaded_by_name
-    FROM attachments a LEFT JOIN users u ON u.id = a.uploaded_by
-    WHERE a.order_id = ? ORDER BY a.id
-  `).all(order.id);
-  const shipments = db.prepare(`
-    SELECT s.id, s.ship_no, s.ship_date, s.note, u.name AS created_by_name,
-      (SELECT COUNT(*) FROM shipment_pieces sp WHERE sp.shipment_id = s.id) AS piece_count
-    FROM shipments s LEFT JOIN users u ON u.id = s.created_by
-    WHERE s.order_id = ? ORDER BY s.id
-  `).all(order.id);
+
+  const getSet = k => db.prepare('SELECT value FROM settings WHERE key = ?').get(k)?.value;
+  const warnDays = Math.max(1, Number(getSet('stall_warn_days')) || 2);
+  const alertDays = Math.max(warnDays, Number(getSet('stall_alert_days')) || 4);
 
   const stageMap = {};
   for (const s of stages) {
@@ -283,30 +321,68 @@ ordersRouter.get('/orders/:id', (req, res) => {
   const shipMap = {};
   for (const s of shipRows) shipMap[s.piece_id] = s;
 
-  const showPrice = canSeePrice(req);
-  const itemsOut = items.map(it => {
-    const row = { ...it };
-    if (!showPrice) { delete row.unit_price; }
-    else { row.amount = it.unit_price != null ? it.unit_price * it.qty : null; }
-    row.pieces = pieces.filter(p => p.item_id === it.id).map(p => ({
+  const all = pieces.map(p => {
+    const it = itemMap.get(p.item_id) || {};
+    const st = stageMap[p.id] || {};
+    const pouts = outMap[p.id] || [];
+    // 已回货的外发按工序标记「外」上标
+    for (const o of pouts) {
+      if (!o.returned_date) continue;
+      for (const t of String(o.type).split(',')) {
+        const key = t === 'plating' ? 'plating_back' : t;
+        if (st[key]) st[key].ext = true;
+      }
+    }
+    const outNow = pouts.find(o => !o.returned_date && (o.status === 'open' || o.status === 'draft')) || null;
+
+    let statusTag;
+    if (st.shipped) statusTag = { label: '已出货', type: 'success' };
+    else if (p.flag && PIECE_FLAG_LABELS[p.flag]) statusTag = { label: PIECE_FLAG_LABELS[p.flag] + (p.flag_note ? `·${p.flag_note}` : ''), type: 'primary', special: true };
+    else if (outNow) {
+      statusTag = outNow.status === 'draft'
+        ? { label: `${outTypeLabel(outNow.type)}外发待确认·${outNow.vendor_name}`, type: 'warning' }
+        : { label: `${outDoingLabel(outNow.type)}·${outNow.vendor_name}`, type: 'warning' };
+    }
+    else if (p.wip_stage && WIP_LABELS[p.wip_stage]) statusTag = { label: WIP_LABELS[p.wip_stage] + (p.wip_note ? `·${p.wip_note}` : ''), type: 'primary', wip: true };
+    else if (st.plating_back) statusTag = { label: '待出货', type: 'primary' };
+    else if (st.grinding) statusTag = { label: '待电镀', type: 'info' };
+    else if (st.cnc) statusTag = { label: '待精磨', type: 'info' };
+    else if (st.milling) statusTag = { label: '待CNC', type: 'info' };
+    else statusTag = { label: '待铣磨', type: 'info' };
+
+    const category = st.shipped ? '已出货'
+      : statusTag.special ? '特殊状态'
+      : outNow ? '外发中'
+      : p.wip_stage ? '加工中'
+      : statusTag.label;
+
+    const idle = p.last_act && !shipMap[p.id]
+      ? Math.max(0, Math.round((Date.parse(today()) - Date.parse(String(p.last_act).slice(0, 10))) / 86400_000))
+      : 0;
+    const stallLevel = st.shipped || order.status !== 'active' ? null
+      : idle >= alertDays ? 'alert' : idle >= warnDays ? 'warn' : null;
+
+    return {
       id: p.id, seq: p.seq, piece_code: p.piece_code,
+      part_no: it.part_no, drawing_no: it.drawing_no, item_name: it.name,
+      spec: it.spec, material: it.material, item_remark: it.remark,
       wip_stage: p.wip_stage, wip_date: p.wip_date, wip_note: p.wip_note,
       note: p.note, flag: p.flag, flag_note: p.flag_note, flag_date: p.flag_date,
-      idle_days: p.last_act && !shipMap[p.id]
-        ? Math.max(0, Math.round((Date.parse(today()) - Date.parse(String(p.last_act).slice(0, 10))) / 86400_000))
-        : 0,
-      stages: stageMap[p.id] || {},
-      outsourcing: (outMap[p.id] || []),
-      shipment: shipMap[p.id] || null
-    }));
-    return row;
+      idle_days: idle, stall_level: stallLevel,
+      stages: st, outsourcing: pouts, shipment: shipMap[p.id] || null,
+      outNow, statusTag, category
+    };
   });
-  if (!showPrice) delete order.amount;
-  const amount = showPrice
-    ? items.reduce((s, it) => s + (it.unit_price != null ? it.unit_price * it.qty : 0), 0)
-    : undefined;
 
-  res.json({ order: { ...order, ...(showPrice ? { amount } : {}) }, items: itemsOut, attachments, shipments });
+  let rows = all;
+  if (statusFilter) rows = rows.filter(r => r.category === statusFilter);
+  if (q) {
+    rows = rows.filter(r =>
+      [r.piece_code, r.part_no, r.drawing_no, r.item_name, r.spec, r.material, r.note, r.item_remark, r.statusTag.label]
+        .some(v => v && String(v).toLowerCase().includes(q))
+    );
+  }
+  res.json({ pieces: rows, total: all.length, shipped_count: all.filter(r => r.stages.shipped).length });
 });
 
 function pieceHasHistory(pieceId) {
@@ -498,6 +574,11 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 }
 });
 
+// 上传的文件强制刷到磁盘（防断电时文件内容还悬在系统缓存里）
+function fsyncFile(fp) {
+  try { const fd = openSync(fp, 'r+'); fsyncSync(fd); closeSync(fd); } catch {}
+}
+
 ordersRouter.post('/orders/:id/attachments', requireRole(...ENTRY_ROLES), upload.array('files', 10), (req, res) => {
   const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: '订单不存在' });
@@ -506,6 +587,7 @@ ordersRouter.post('/orders/:id/attachments', requireRole(...ENTRY_ROLES), upload
     'INSERT INTO attachments (order_id, item_id, orig_name, stored_name, size, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)'
   );
   for (const f of req.files || []) {
+    fsyncFile(path.join(UPLOAD_DIR, f.filename));
     const origName = Buffer.from(f.originalname, 'latin1').toString('utf8');
     ins.run(order.id, itemId, origName, f.filename, f.size, req.user.id);
   }
@@ -762,6 +844,7 @@ ordersRouter.post('/orders/reconcile-import', requireRole(...ENTRY_ROLES), recon
     const stored = `${Date.now()}_${randomBytes(6).toString('hex')}.pdf`;
     const origName = Buffer.from(pdfFile.originalname, 'latin1').toString('utf8');
     writeFileSync(path.join(UPLOAD_DIR, stored), pdfFile.buffer);
+    fsyncFile(path.join(UPLOAD_DIR, stored));
     db.prepare('INSERT INTO attachments (order_id, item_id, orig_name, stored_name, size, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)')
       .run(orderId, null, origName || 'PO.pdf', stored, pdfFile.size, req.user.id);
   } catch (e) { console.error('PDF留档失败(订单已录入):', e.message); }

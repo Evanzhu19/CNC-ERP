@@ -29,7 +29,7 @@
         <el-descriptions-item label="客户PO">{{ detail.order.customer_po || '—' }}</el-descriptions-item>
         <el-descriptions-item label="下单日期">{{ detail.order.order_date }}</el-descriptions-item>
         <el-descriptions-item label="交期">{{ detail.order.due_date || '—' }}</el-descriptions-item>
-        <el-descriptions-item label="总件数">{{ allPieces.length }} 件</el-descriptions-item>
+        <el-descriptions-item label="总件数">{{ piecesTotal }} 件</el-descriptions-item>
         <el-descriptions-item label="已出货">{{ shippedCount }} 件</el-descriptions-item>
         <el-descriptions-item v-if="showPrice" label="订单金额">
           <b style="color: #d4380d">{{ detail.order.amount != null ? '¥' + detail.order.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) : '—' }}</b>
@@ -62,10 +62,10 @@
           <el-option v-for="s in ['待铣磨','待CNC','待精磨','待电镀','待出货','加工中','外发中','特殊状态','已出货']" :key="s" :label="s" :value="s" />
         </el-select>
         <span v-if="pieceQuery || pieceFilter" style="color:#909399; font-size:13px">
-          筛出 {{ filteredPieceRows.length }} / 共 {{ pieceRows.length }} 件
+          筛出 {{ pieces.length }} / 共 {{ piecesTotal }} 件
         </span>
       </div>
-      <el-table ref="pieceTable" :data="filteredPieceRows" border size="small" @selection-change="s => selected = s" row-key="id" :row-class-name="stallRowClass">
+      <el-table ref="pieceTable" :data="pieces" border size="small" @selection-change="s => selected = s" row-key="id" :row-class-name="stallRowClass">
         <el-table-column type="selection" width="40" :selectable="() => entry && detail.order.status !== 'void'" reserve-selection />
         <el-table-column label="板件号" width="130" fixed>
           <template #default="{ row }">
@@ -85,7 +85,7 @@
               <el-tag type="warning" size="small" :effect="row.outNow.status === 'draft' ? 'plain' : 'light'">{{ row.outNow.status === 'draft' ? '待确认' : '外发中' }}</el-tag>
             </el-tooltip>
             <el-tooltip v-else-if="row.stages[proc]" :content="row.stages[proc].note || '本厂完成'">
-              <span class="done">{{ row.stages[proc].done_date.slice(5) }}<sup v-if="isExt(row, proc)" class="ext">外</sup></span>
+              <span class="done">{{ row.stages[proc].done_date.slice(5) }}<sup v-if="row.stages[proc].ext" class="ext">外</sup></span>
             </el-tooltip>
             <span v-else class="pending">—</span>
           </template>
@@ -123,8 +123,8 @@
         <el-table-column label="滞留" width="72" align="center">
           <template #default="{ row }">
             <span v-if="row.stages.shipped" class="pending">—</span>
-            <b v-else-if="row.idle_days >= stallAlert" style="color:#f56c6c">{{ row.idle_days }}天</b>
-            <b v-else-if="row.idle_days >= stallWarn" style="color:#e6a23c">{{ row.idle_days }}天</b>
+            <b v-else-if="row.stall_level === 'alert'" style="color:#f56c6c">{{ row.idle_days }}天</b>
+            <b v-else-if="row.stall_level === 'warn'" style="color:#e6a23c">{{ row.idle_days }}天</b>
             <span v-else style="color:#909399">{{ row.idle_days }}天</span>
           </template>
         </el-table-column>
@@ -368,7 +368,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { ArrowLeft } from '@element-plus/icons-vue';
 import { api, canSeePrice, canEntry, token, getUser } from '../api.js';
-import { ORDER_STATUS, pieceStatus, outTypeLabel, PIECE_FLAGS } from '../consts.js';
+import { ORDER_STATUS, outTypeLabel, PIECE_FLAGS } from '../consts.js';
 
 const route = useRoute();
 const router = useRouter();
@@ -497,68 +497,34 @@ async function hardDelete() {
   router.push('/orders');
 }
 
-const allPieces = computed(() => detail.value ? detail.value.items.flatMap(i => i.pieces) : []);
-const shippedCount = computed(() => allPieces.value.filter(p => p.stages.shipped).length);
-
-const stallWarn = ref(2);
-const stallAlert = ref(4);
-
-const pieceRows = computed(() => {
-  if (!detail.value) return [];
-  const rows = [];
-  for (const it of detail.value.items) {
-    for (const p of it.pieces) {
-      const openOuts = (p.outsourcing || []).filter(o => !o.returned_date && (o.status === 'open' || o.status === 'draft'));
-      rows.push({
-        ...p,
-        part_no: it.part_no, drawing_no: it.drawing_no, item_name: it.name,
-        spec: it.spec, material: it.material, item_remark: it.remark,
-        outNow: openOuts[0] || null,
-        statusTag: pieceStatus(p)
-      });
-    }
-  }
-  return rows;
-});
+// 板件行全部由后端算好（状态/筛选/滞留分级），前端只负责渲染
+const pieces = ref([]);
+const piecesTotal = ref(0);
+const shippedCount = ref(0);
 
 const pieceQuery = ref('');
 const pieceFilter = ref('');
 const pieceTable = ref(null);
 
-function pieceCategory(row) {
-  if (row.stages.shipped) return '已出货';
-  if (row.statusTag.special) return '特殊状态';
-  if (row.outNow) return '外发中';
-  if (row.wip_stage) return '加工中';
-  return row.statusTag.label;
+async function fetchPieces() {
+  const params = {};
+  if (pieceQuery.value.trim()) params.q = pieceQuery.value.trim();
+  if (pieceFilter.value) params.status = pieceFilter.value;
+  const { data } = await api.get(`/orders/${route.params.id}/pieces`, { params });
+  pieces.value = data.pieces;
+  piecesTotal.value = data.total;
+  shippedCount.value = data.shipped_count;
 }
 
-const filteredPieceRows = computed(() => {
-  let rows = pieceRows.value;
-  if (pieceFilter.value) rows = rows.filter(r => pieceCategory(r) === pieceFilter.value);
-  const kw = pieceQuery.value.trim().toLowerCase();
-  if (kw) {
-    rows = rows.filter(r =>
-      [r.piece_code, r.part_no, r.drawing_no, r.item_name, r.spec, r.material, r.note, r.item_remark, r.statusTag.label]
-        .some(v => v && String(v).toLowerCase().includes(kw))
-    );
-  }
-  return rows;
-});
-
+let pieceTimer = null;
 watch([pieceQuery, pieceFilter], () => {
   pieceTable.value?.clearSelection();
+  clearTimeout(pieceTimer);
+  pieceTimer = setTimeout(fetchPieces, 300);
 });
 
-function isExt(row, proc) {
-  return (row.outsourcing || []).some(o => o.returned_date && String(o.type).split(',').includes(proc));
-}
-
 function stallRowClass({ row }) {
-  if (row.stages.shipped) return '';
-  if (row.idle_days >= stallAlert.value) return 'stall-alert';
-  if (row.idle_days >= stallWarn.value) return 'stall-warn';
-  return '';
+  return row.stall_level === 'alert' ? 'stall-alert' : row.stall_level === 'warn' ? 'stall-warn' : '';
 }
 
 const vendorOptions = computed(() =>
@@ -575,7 +541,7 @@ const vendorOptions = computed(() =>
 async function load() {
   loading.value = true;
   try {
-    const { data } = await api.get(`/orders/${route.params.id}`);
+    const [{ data }] = await Promise.all([api.get(`/orders/${route.params.id}`), fetchPieces()]);
     detail.value = data;
   } finally { loading.value = false; }
 }
@@ -710,10 +676,8 @@ async function setStatus(status) {
 
 onMounted(async () => {
   load();
-  const [{ data }, { data: s }] = await Promise.all([api.get('/vendors'), api.get('/settings')]);
+  const { data } = await api.get('/vendors');
   vendors.value = data.vendors;
-  stallWarn.value = s.stall_warn_days || 2;
-  stallAlert.value = s.stall_alert_days || 4;
 });
 </script>
 

@@ -15,6 +15,10 @@ mkdirSync(BACKUP_DIR, { recursive: true });
 
 export const db = new DatabaseSync(path.join(DATA_DIR, 'erp.sqlite'));
 db.exec('PRAGMA journal_mode = WAL');
+// FULL：每次事务提交都强制刷到磁盘（fsync），断电最多丢"还没点保存的"，
+// 已返回成功的操作绝不丢失。NORMAL 模式断电可能丢最近几笔已提交事务，不可用。
+db.exec('PRAGMA synchronous = FULL');
+db.exec('PRAGMA busy_timeout = 5000');
 db.exec('PRAGMA foreign_keys = ON');
 
 db.exec(`
