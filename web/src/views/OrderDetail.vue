@@ -313,8 +313,9 @@
         <el-form-item label="发出日期">
           <el-date-picker v-model="outsourceForm.sent_date" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="预计回厂">
-          <el-date-picker v-model="outsourceForm.expected_date" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+        <el-form-item label="预计回厂" required>
+          <el-date-picker v-model="outsourceForm.expected_date" type="date" value-format="YYYY-MM-DD" style="width: 100%"
+            placeholder="跟厂家约的回厂日子，看板按它提醒超期" />
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="outsourceForm.note" type="textarea" :rows="2" placeholder="加工要求、注意事项等" />
@@ -601,6 +602,8 @@ async function submitOutsource() {
   const type = f.kind === 'plating' ? 'plating' : order.filter(p => f.procs.includes(p)).join(',');
   if (!type) return ElMessage.warning('请至少勾选一道外发工序');
   if (!f.vendor_id) return ElMessage.warning('请选择外协厂家');
+  if (!f.expected_date) return ElMessage.warning('请填写预计回厂日期（看板按它提醒超期）');
+  if (f.sent_date && f.expected_date < f.sent_date) return ElMessage.warning('预计回厂日期不能早于发出日期');
   const { data } = await api.post('/outsourcing', {
     piece_ids: ids(), type, vendor_id: f.vendor_id,
     sent_date: f.sent_date, expected_date: f.expected_date, note: f.note

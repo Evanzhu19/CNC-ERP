@@ -233,6 +233,13 @@ productionRouter.post('/outsourcing', requireRole(...ENTRY_ROLES), (req, res) =>
   const pieces = getPieces(piece_ids);
   if (pieces.length === 0) return res.status(400).json({ error: '请至少选择一件' });
   const sdate = sent_date || today();
+  // 预计回厂必填：看板超期提醒按它判断，不填就没人盯着这批货
+  if (!expected_date || !/^\d{4}-\d{2}-\d{2}$/.test(String(expected_date))) {
+    return res.status(400).json({ error: '请填写预计回厂日期（看板按它提醒超期，必填）' });
+  }
+  if (String(expected_date) < sdate) {
+    return res.status(400).json({ error: '预计回厂日期不能早于发出日期' });
+  }
   db.exec('BEGIN');
   try {
     const batchNo = nextNo('outsourcing', 'batch_no', `W${yymm(sdate)}`);
