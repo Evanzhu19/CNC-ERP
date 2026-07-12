@@ -79,8 +79,8 @@
         </tbody>
       </table>
 
-      <div class="req" v-if="settings.out_requirements">
-        备注：{{ settings.out_requirements }}
+      <div class="req" v-if="reqText">
+        备注：{{ reqText }}
       </div>
       <div class="req" v-if="data.batch.note">
         本单加工内容：{{ outTypeLabel(data.batch.type) }}。{{ data.batch.note }}
@@ -157,6 +157,15 @@ const groupedLines = computed(() => {
 });
 
 const totalQty = computed(() => data.value ? data.value.pieces.length : 0);
+
+// 加工要求：本单填的优先；老单没填的按类型回退到系统模板（电镀/加工各一套）
+const reqText = computed(() => {
+  if (!data.value) return '';
+  if (data.value.batch.requirements) return data.value.batch.requirements;
+  return String(data.value.batch.type).includes('plating')
+    ? (settings.value.out_requirements_plating || '')
+    : (settings.value.out_requirements || '');
+});
 
 function print() { window.print(); }
 function close() { window.close(); }

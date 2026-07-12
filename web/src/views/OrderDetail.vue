@@ -317,8 +317,13 @@
           <el-date-picker v-model="outsourceForm.expected_date" type="date" value-format="YYYY-MM-DD" style="width: 100%"
             placeholder="跟厂家约的回厂日子，看板按它提醒超期" />
         </el-form-item>
+        <el-form-item label="加工要求">
+          <el-input v-model="outsourceForm.requirements" type="textarea" :rows="3"
+            :placeholder="outsourceForm.kind === 'plating' ? '如镀层厚度8μm/10μm，按本单实际要求改' : '打印在外发单红字要求区'" />
+          <div style="color:#909399; font-size:12px">已按{{ outsourceForm.kind === 'plating' ? '电镀' : '加工' }}模板预填（系统设置里可改模板），本单不同就直接改这里，打印在外发单红字区</div>
+        </el-form-item>
         <el-form-item label="备注">
-          <el-input v-model="outsourceForm.note" type="textarea" :rows="2" placeholder="加工要求、注意事项等" />
+          <el-input v-model="outsourceForm.note" type="textarea" :rows="2" placeholder="其他注意事项" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -460,7 +465,8 @@ async function clearWip() {
 const undoDialog = ref(false);
 const undoStage = ref('milling');
 const outsourceDialog = ref(false);
-const outsourceForm = ref({ kind: 'work', procs: [], vendor_id: null, sent_date: today, expected_date: null, note: '' });
+const outsourceForm = ref({ kind: 'work', procs: [], vendor_id: null, sent_date: today, expected_date: null, requirements: '', note: '' });
+let reqTemplates = null; // 加工要求模板缓存（来自系统设置）
 const flagDialog = ref(false);
 const flagForm = ref({ flag: 'rework', note: '' });
 const selectedHasFlag = computed(() => selected.value.some(s => s.flag));
@@ -551,8 +557,17 @@ function ids() { return selected.value.map(s => s.id); }
 
 function openProgress() { progressForm.value = { stage: 'milling', done_date: today, note: '' }; progressDialog.value = true; }
 function openUndo() { undoDialog.value = true; }
-function openOutsource(kind) {
-  outsourceForm.value = { kind, procs: kind === 'work' ? ['cnc'] : [], vendor_id: null, sent_date: today, expected_date: null, note: '' };
+async function openOutsource(kind) {
+  if (!reqTemplates) {
+    const { data: s } = await api.get('/settings');
+    reqTemplates = { work: s.out_requirements || '', plating: s.out_requirements_plating || '' };
+  }
+  outsourceForm.value = {
+    kind, procs: kind === 'work' ? ['cnc'] : [], vendor_id: null,
+    sent_date: today, expected_date: null,
+    requirements: kind === 'plating' ? reqTemplates.plating : reqTemplates.work,
+    note: ''
+  };
   outsourceDialog.value = true;
 }
 
@@ -606,7 +621,7 @@ async function submitOutsource() {
   if (f.sent_date && f.expected_date < f.sent_date) return ElMessage.warning('预计回厂日期不能早于发出日期');
   const { data } = await api.post('/outsourcing', {
     piece_ids: ids(), type, vendor_id: f.vendor_id,
-    sent_date: f.sent_date, expected_date: f.expected_date, note: f.note
+    sent_date: f.sent_date, expected_date: f.expected_date, requirements: f.requirements, note: f.note
   });
   ElMessage({ message: `外发单 ${data.batch_no} 已生成（待确认）。货实际发出后，请在打印页点「确认已外发」，板件才算在外。`, type: 'warning', duration: 6000 });
   outsourceDialog.value = false;

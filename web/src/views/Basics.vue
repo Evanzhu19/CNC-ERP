@@ -83,7 +83,10 @@
             <el-input v-model="settings.out_deliver_address" placeholder="外发单条款里的交货地址" />
           </el-form-item>
           <el-form-item label="加工要求">
-            <el-input v-model="settings.out_requirements" type="textarea" :rows="3" placeholder="打印在外发单明细表下方的红字要求" />
+            <el-input v-model="settings.out_requirements" type="textarea" :rows="3" placeholder="加工外发单（铣磨/CNC/精磨）红字要求，开单时预填可改" />
+          </el-form-item>
+          <el-form-item label="电镀要求">
+            <el-input v-model="settings.out_requirements_plating" type="textarea" :rows="3" placeholder="电镀外发单红字要求（如镀层厚度8μm），开单时预填可改" />
           </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="saveSettings">保存设置</el-button>
@@ -167,7 +170,8 @@ async function saveSettings() {
     out_contact_name: settings.value.out_contact_name,
     out_contact_phone: settings.value.out_contact_phone,
     out_deliver_address: settings.value.out_deliver_address,
-    out_requirements: settings.value.out_requirements
+    out_requirements: settings.value.out_requirements,
+    out_requirements_plating: settings.value.out_requirements_plating
   });
   ElMessage.success('设置已保存');
 }

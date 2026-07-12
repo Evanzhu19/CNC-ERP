@@ -216,7 +216,7 @@ productionRouter.post('/pieces/note', requireRole(...ENTRY_ROLES), (req, res) =>
 });
 
 productionRouter.post('/outsourcing', requireRole(...ENTRY_ROLES), (req, res) => {
-  const { type, vendor_id, sent_date, expected_date, note, piece_ids } = req.body || {};
+  const { type, vendor_id, sent_date, expected_date, note, requirements, piece_ids } = req.body || {};
   const procs = parseProcs(type);
   if (!procs) return res.status(400).json({ error: '外发工序无效（加工外发可组合相邻工序如CNC+精磨，电镀只能单独外发）' });
   if (!vendor_id) return res.status(400).json({ error: '请选择外协厂家' });
@@ -244,9 +244,10 @@ productionRouter.post('/outsourcing', requireRole(...ENTRY_ROLES), (req, res) =>
   try {
     const batchNo = nextNo('outsourcing', 'batch_no', `W${yymm(sdate)}`);
     const r = db.prepare(`
-      INSERT INTO outsourcing (batch_no, type, vendor_id, sent_date, expected_date, note, status, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, 'draft', ?)
-    `).run(batchNo, procs.join(','), vendor.id, sdate, expected_date || null, note || null, req.user.id);
+      INSERT INTO outsourcing (batch_no, type, vendor_id, sent_date, expected_date, note, requirements, status, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?)
+    `).run(batchNo, procs.join(','), vendor.id, sdate, expected_date || null, note || null,
+      String(requirements || '').trim() || null, req.user.id);
     const oid = Number(r.lastInsertRowid);
     const ins = db.prepare('INSERT INTO outsourcing_pieces (outsourcing_id, piece_id) VALUES (?, ?)');
     for (const p of pieces) {

@@ -63,13 +63,14 @@ basicsRouter.get('/settings', (req, res) => {
     out_contact_name: getSetting('out_contact_name') || '',
     out_contact_phone: getSetting('out_contact_phone') || '',
     out_deliver_address: getSetting('out_deliver_address') || '',
-    out_requirements: getSetting('out_requirements') || ''
+    out_requirements: getSetting('out_requirements') || '',
+    out_requirements_plating: getSetting('out_requirements_plating') || ''
   });
 });
 
 basicsRouter.put('/settings', requireRole('admin', 'cnc_manager'), (req, res) => {
   const { company_name, stall_warn_days, stall_alert_days,
-    out_contact_name, out_contact_phone, out_deliver_address, out_requirements } = req.body || {};
+    out_contact_name, out_contact_phone, out_deliver_address, out_requirements, out_requirements_plating } = req.body || {};
   if (!company_name || !String(company_name).trim()) return res.status(400).json({ error: '公司名称不能为空' });
   const warn = Number(stall_warn_days);
   const alert = Number(stall_alert_days);
@@ -84,6 +85,7 @@ basicsRouter.put('/settings', requireRole('admin', 'cnc_manager'), (req, res) =>
     setSetting('out_contact_phone', String(out_contact_phone || '').trim());
     setSetting('out_deliver_address', String(out_deliver_address || '').trim());
     setSetting('out_requirements', String(out_requirements || '').trim());
+    setSetting('out_requirements_plating', String(out_requirements_plating || '').trim());
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
