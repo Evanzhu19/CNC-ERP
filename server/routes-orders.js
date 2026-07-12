@@ -586,10 +586,17 @@ ordersRouter.post('/orders/:id/attachments', requireRole(...ENTRY_ROLES), upload
   const ins = db.prepare(
     'INSERT INTO attachments (order_id, item_id, orig_name, stored_name, size, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)'
   );
-  for (const f of req.files || []) {
-    fsyncFile(path.join(UPLOAD_DIR, f.filename));
-    const origName = Buffer.from(f.originalname, 'latin1').toString('utf8');
-    ins.run(order.id, itemId, origName, f.filename, f.size, req.user.id);
+  for (const f of req.files || []) fsyncFile(path.join(UPLOAD_DIR, f.filename));
+  db.exec('BEGIN');
+  try {
+    for (const f of req.files || []) {
+      const origName = Buffer.from(f.originalname, 'latin1').toString('utf8');
+      ins.run(order.id, itemId, origName, f.filename, f.size, req.user.id);
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
   }
   res.json({ ok: true, count: (req.files || []).length });
 });

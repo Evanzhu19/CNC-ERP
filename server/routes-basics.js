@@ -42,8 +42,15 @@ basicsRouter.post('/me/password', (req, res) => {
   if (!verifyPassword(String(old_password || ''), row.password_hash)) {
     return res.status(400).json({ error: '原密码不正确' });
   }
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(String(new_password)), req.user.id);
-  db.prepare('DELETE FROM sessions WHERE user_id = ? AND token != ?').run(req.user.id, req.token);
+  db.exec('BEGIN');
+  try {
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(String(new_password)), req.user.id);
+    db.prepare('DELETE FROM sessions WHERE user_id = ? AND token != ?').run(req.user.id, req.token);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
   res.json({ ok: true });
 });
 
@@ -68,13 +75,20 @@ basicsRouter.put('/settings', requireRole('admin', 'cnc_manager'), (req, res) =>
   const alert = Number(stall_alert_days);
   if (!Number.isInteger(warn) || warn < 1 || warn > 60) return res.status(400).json({ error: '提示天数需为1-60的整数' });
   if (!Number.isInteger(alert) || alert < warn || alert > 90) return res.status(400).json({ error: '报警天数需≥提示天数且不超过90' });
-  setSetting('company_name', String(company_name).trim());
-  setSetting('stall_warn_days', String(warn));
-  setSetting('stall_alert_days', String(alert));
-  setSetting('out_contact_name', String(out_contact_name || '').trim());
-  setSetting('out_contact_phone', String(out_contact_phone || '').trim());
-  setSetting('out_deliver_address', String(out_deliver_address || '').trim());
-  setSetting('out_requirements', String(out_requirements || '').trim());
+  db.exec('BEGIN');
+  try {
+    setSetting('company_name', String(company_name).trim());
+    setSetting('stall_warn_days', String(warn));
+    setSetting('stall_alert_days', String(alert));
+    setSetting('out_contact_name', String(out_contact_name || '').trim());
+    setSetting('out_contact_phone', String(out_contact_phone || '').trim());
+    setSetting('out_deliver_address', String(out_deliver_address || '').trim());
+    setSetting('out_requirements', String(out_requirements || '').trim());
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
   res.json({ ok: true });
 });
 
