@@ -32,12 +32,12 @@ export function getUser() {
 
 export function canSeePrice() {
   const u = getUser();
-  return !!u && ['admin', 'finance', 'cnc_manager'].includes(u.role);
+  return !!u && ['admin', 'procurement', 'finance', 'cnc_manager'].includes(u.role);
 }
 
 export function canEntry() {
   const u = getUser();
-  return !!u && ['admin', 'cnc_manager', 'clerk', 'follower'].includes(u.role);
+  return !!u && ['admin', 'procurement', 'cnc_manager', 'clerk', 'follower'].includes(u.role);
 }
 
 export function token() {

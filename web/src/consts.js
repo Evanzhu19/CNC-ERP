@@ -9,6 +9,7 @@ export const STAGE_NAMES = {
 
 export const ROLE_NAMES = {
   admin: '总经理',
+  procurement: '采购主管',
   finance: '财务',
   cnc_manager: 'CNC主管',
   clerk: '文员',

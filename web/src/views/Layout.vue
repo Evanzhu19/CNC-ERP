@@ -9,7 +9,7 @@
         <el-menu-item index="/outsourcing"><el-icon><Van /></el-icon>外发管理</el-menu-item>
         <el-menu-item index="/shipments"><el-icon><Tickets /></el-icon>送货单</el-menu-item>
         <el-menu-item index="/basics"><el-icon><OfficeBuilding /></el-icon>客户与厂家</el-menu-item>
-        <el-menu-item v-if="user?.role === 'admin'" index="/users"><el-icon><User /></el-icon>用户管理</el-menu-item>
+        <el-menu-item v-if="['admin', 'procurement'].includes(user?.role)" index="/users"><el-icon><User /></el-icon>用户管理</el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>

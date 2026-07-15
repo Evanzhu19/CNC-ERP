@@ -1,9 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { db, verifyPassword } from './db.js';
 
-export const PRICE_ROLES = ['admin', 'finance', 'cnc_manager'];
-export const ENTRY_ROLES = ['admin', 'cnc_manager', 'clerk', 'follower'];
-export const BASICS_ROLES = ['admin', 'cnc_manager', 'clerk', 'follower', 'finance'];
+// procurement（采购主管）：与刀具系统打通的角色，在ERP拥有全部权限
+export const PRICE_ROLES = ['admin', 'procurement', 'finance', 'cnc_manager'];
+export const ENTRY_ROLES = ['admin', 'procurement', 'cnc_manager', 'clerk', 'follower'];
+export const BASICS_ROLES = ['admin', 'procurement', 'cnc_manager', 'clerk', 'follower', 'finance'];
 
 const SESSION_DAYS = 30;
 

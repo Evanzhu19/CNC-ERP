@@ -205,6 +205,17 @@ db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('stall_warn_days
 db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('stall_alert_days', '4')`).run();
 
 try { db.exec('ALTER TABLE vendors ADD COLUMN address TEXT'); } catch { /* 列已存在 */ }
+
+// 新增采购主管角色（与刀具系统统一登录配套）
+rebuildTable('users', `CREATE TABLE users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('admin','procurement','finance','cnc_manager','clerk','follower','programmer','outsourcer')),
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+)`, sql => !sql.includes('procurement'));
 try { db.exec('ALTER TABLE outsourcing ADD COLUMN requirements TEXT'); } catch { /* 列已存在 */ }
 // 电镀外发单专用加工要求模板（开单时预填可改，如镀层厚度8μm/10μm）
 db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('out_requirements_plating', '镀硬铬，镀层厚度：8μm，镀层均匀，不得有烧焦、起泡、脱皮、露底；孔内及螺纹按图纸要求防护；回厂前做好防潮防刮包装。')`).run();

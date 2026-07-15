@@ -321,9 +321,23 @@ ordersRouter.get('/orders/:id/pieces', (req, res) => {
   const shipMap = {};
   for (const s of shipRows) shipMap[s.piece_id] = s;
 
+  // 板厚→建议铣刀刃长（30厚→≥35刃，25→≥30；取整到5的倍数）
+  const bladeTip = spec => {
+    const nums = String(spec || '').match(/\d+(\.\d+)?/g);
+    if (!nums || nums.length < 3) return null;
+    const t = Math.min(...nums.slice(0, 3).map(Number));
+    if (t < 5 || t > 80) return null;
+    const rec = Math.ceil((t + 5) / 5) * 5;
+    return { thickness: t, blade: rec };
+  };
+  // 同一明细行（同图号同规格）内的件序：3/12 这样
+  const groupCounter = new Map();
+
   const all = pieces.map(p => {
     const it = itemMap.get(p.item_id) || {};
     const st = stageMap[p.id] || {};
+    const groupSeq = (groupCounter.get(p.item_id) || 0) + 1;
+    groupCounter.set(p.item_id, groupSeq);
     const pouts = outMap[p.id] || [];
     // 已回货的外发按工序标记「外」上标
     for (const o of pouts) {
@@ -366,6 +380,8 @@ ordersRouter.get('/orders/:id/pieces', (req, res) => {
       id: p.id, seq: p.seq, piece_code: p.piece_code,
       part_no: it.part_no, drawing_no: it.drawing_no, item_name: it.name,
       spec: it.spec, material: it.material, item_remark: it.remark,
+      group_seq: groupSeq, group_total: it.qty || null,
+      blade_tip: bladeTip(it.spec),
       wip_stage: p.wip_stage, wip_date: p.wip_date, wip_note: p.wip_note,
       note: p.note, flag: p.flag, flag_note: p.flag_note, flag_date: p.flag_date,
       idle_days: idle, stall_level: stallLevel,
@@ -475,7 +491,7 @@ ordersRouter.post('/orders/:id/status', requireRole(...ENTRY_ROLES), (req, res) 
       SELECT COUNT(*) AS n FROM pieces p WHERE p.order_id = ?
       AND NOT EXISTS (SELECT 1 FROM shipment_pieces sp WHERE sp.piece_id = p.id)
     `).get(order.id).n;
-    if (unshipped > 0 && req.user.role !== 'admin' && req.user.role !== 'cnc_manager') {
+    if (unshipped > 0 && !['admin', 'procurement', 'cnc_manager'].includes(req.user.role)) {
       return res.status(400).json({ error: `还有 ${unshipped} 件未出货，不能结案` });
     }
   }
@@ -537,7 +553,7 @@ export function purgeExpiredVoidedOrders() {
   return expired.length;
 }
 
-ordersRouter.delete('/orders/:id', requireRole('admin', 'cnc_manager'), (req, res) => {
+ordersRouter.delete('/orders/:id', requireRole('admin', 'procurement', 'cnc_manager'), (req, res) => {
   const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: '订单不存在' });
 
@@ -547,7 +563,7 @@ ordersRouter.delete('/orders/:id', requireRole('admin', 'cnc_manager'), (req, re
   }
 
   if (order.status === 'closed') {
-    if (req.user.role !== 'admin') {
+    if (!['admin', 'procurement'].includes(req.user.role)) {
       return res.status(403).json({ error: '删除已结案订单需要总经理授权' });
     }
     const { password } = req.body || {};

@@ -72,10 +72,24 @@
             <a href="javascript:;" style="color:#409eff; text-decoration:none" @click.stop="openTimeline(row)">{{ row.piece_code }}</a>
           </template>
         </el-table-column>
-        <el-table-column prop="part_no" label="编号" width="90" show-overflow-tooltip />
+        <el-table-column label="编号" width="90" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.part_no">{{ row.part_no }}</span>
+            <el-tooltip v-else :content="`同图号共 ${row.group_total} 件中的第 ${row.group_seq} 件`">
+              <span style="color:#409eff">{{ row.group_seq }}/{{ row.group_total }}</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
         <el-table-column prop="drawing_no" label="图号" width="110" show-overflow-tooltip />
         <el-table-column prop="item_name" label="品名" width="100" show-overflow-tooltip />
-        <el-table-column prop="spec" label="规格" width="120" show-overflow-tooltip />
+        <el-table-column label="规格" width="132">
+          <template #default="{ row }">
+            <span>{{ row.spec }}</span>
+            <el-tooltip v-if="row.blade_tip" :content="`板厚 ${row.blade_tip.thickness}，本厂加工建议用 ≥${row.blade_tip.blade} 刃长铣刀`">
+              <span class="blade">刀{{ row.blade_tip.blade }}</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
         <el-table-column prop="material" label="材质" width="70" show-overflow-tooltip />
         <el-table-column v-for="proc in ['milling', 'cnc', 'grinding']" :key="proc"
           :label="{ milling: '铣磨', cnc: 'CNC', grinding: '精磨' }[proc]" width="96" align="center">
@@ -249,6 +263,11 @@
         <el-form-item label="备注">
           <el-input v-model="startForm.note" placeholder="如：6米机、夜班（会显示在状态里）" />
         </el-form-item>
+        <el-alert v-if="bladeTips.length && ['milling', 'cnc'].includes(startForm.stage)" type="warning" :closable="false" style="margin-bottom: 8px">
+          <template #title>
+            <div v-for="t in bladeTips" :key="t">🔧 {{ t }}</div>
+          </template>
+        </el-alert>
         <el-alert type="info" :closable="false" title="开工=标记这些板现在正在这道工序上。做完报工后自动清除；标错了可用「取消开工」。CNC外发的板不用开工，直接点「CNC外发」。" />
       </el-form>
       <template #footer>
@@ -440,6 +459,16 @@ function openTimeline(row) {
 const progressDialog = ref(false);
 const progressForm = ref({ stage: 'milling', done_date: today, note: '' });
 const startDialog = ref(false);
+// 选中板件的板厚→刃长建议（去重汇总）
+const bladeTips = computed(() => {
+  const m = new Map();
+  for (const r of selected.value) {
+    if (r.blade_tip) m.set(r.blade_tip.thickness, r.blade_tip.blade);
+  }
+  return [...m.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([t, b]) => `板厚 ${t}：建议用 ≥${b} 刃长铣刀`);
+});
 const startForm = ref({ stage: 'milling', start_date: today, note: '' });
 
 const selectedHasWip = computed(() => selected.value.some(s => s.wip_stage));
@@ -474,7 +503,7 @@ const shipDialog = ref(false);
 const shipForm = ref({ ship_date: today, note: '' });
 
 const canHardDelete = ['admin', 'cnc_manager'].includes(getUser()?.role);
-const isAdmin = getUser()?.role === 'admin';
+const isAdmin = ['admin', 'procurement'].includes(getUser()?.role);
 
 async function deleteClosedOrder() {
   const { value: password } = await ElMessageBox.prompt(
@@ -726,4 +755,5 @@ onMounted(async () => {
 .draw-file { display: flex; align-items: center; gap: 10px; padding: 3px 0 3px 34px; font-size: 13px; }
 .draw-file a { color: #409eff; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 .draw-meta { color: #909399; font-size: 12px; flex-shrink: 0; }
+.blade { margin-left: 4px; padding: 0 4px; background: #ecf5ff; color: #409eff; border-radius: 3px; font-size: 11px; white-space: nowrap; cursor: default; }
 </style>

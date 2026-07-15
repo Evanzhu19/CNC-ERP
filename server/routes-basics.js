@@ -68,7 +68,7 @@ basicsRouter.get('/settings', (req, res) => {
   });
 });
 
-basicsRouter.put('/settings', requireRole('admin', 'cnc_manager'), (req, res) => {
+basicsRouter.put('/settings', requireRole('admin', 'procurement', 'cnc_manager'), (req, res) => {
   const { company_name, stall_warn_days, stall_alert_days,
     out_contact_name, out_contact_phone, out_deliver_address, out_requirements, out_requirements_plating } = req.body || {};
   if (!company_name || !String(company_name).trim()) return res.status(400).json({ error: '公司名称不能为空' });
@@ -109,7 +109,7 @@ const logoUpload = multer({
   }
 });
 
-basicsRouter.post('/settings/logo', requireRole('admin', 'cnc_manager'), logoUpload.single('file'), (req, res) => {
+basicsRouter.post('/settings/logo', requireRole('admin', 'procurement', 'cnc_manager'), logoUpload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: '请选择图片文件' });
   const old = getSetting('logo_file');
   if (old && old !== req.file.filename) {
@@ -127,7 +127,7 @@ basicsRouter.get('/settings/logo', (req, res) => {
   res.sendFile(fp);
 });
 
-basicsRouter.delete('/settings/logo', requireRole('admin', 'cnc_manager'), (req, res) => {
+basicsRouter.delete('/settings/logo', requireRole('admin', 'procurement', 'cnc_manager'), (req, res) => {
   const file = getSetting('logo_file');
   if (file) {
     try { const fp = path.join(DATA_DIR, file); if (existsSync(fp)) unlinkSync(fp); } catch {}
@@ -206,14 +206,14 @@ basicsRouter.put('/vendors/:id', requireRole(...BASICS_ROLES), (req, res) => {
   }
 });
 
-basicsRouter.get('/users', requireRole('admin'), (req, res) => {
+basicsRouter.get('/users', requireRole('admin', 'procurement'), (req, res) => {
   const rows = db.prepare('SELECT id, username, name, role, active, created_at FROM users ORDER BY id').all();
   res.json({ users: rows });
 });
 
-const VALID_ROLES = ['admin', 'finance', 'cnc_manager', 'clerk', 'follower', 'programmer', 'outsourcer'];
+const VALID_ROLES = ['admin', 'procurement', 'finance', 'cnc_manager', 'clerk', 'follower', 'programmer', 'outsourcer'];
 
-basicsRouter.post('/users', requireRole('admin'), (req, res) => {
+basicsRouter.post('/users', requireRole('admin', 'procurement'), (req, res) => {
   const { username, password, name, role } = req.body || {};
   if (!username || !String(username).trim()) return res.status(400).json({ error: '用户名不能为空' });
   if (!password || String(password).length < 6) return res.status(400).json({ error: '密码至少6位' });
@@ -228,7 +228,7 @@ basicsRouter.post('/users', requireRole('admin'), (req, res) => {
   }
 });
 
-basicsRouter.put('/users/:id', requireRole('admin'), (req, res) => {
+basicsRouter.put('/users/:id', requireRole('admin', 'procurement'), (req, res) => {
   const id = Number(req.params.id);
   const { name, role, active, password } = req.body || {};
   if (!VALID_ROLES.includes(role)) return res.status(400).json({ error: '角色无效' });
