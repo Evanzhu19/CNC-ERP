@@ -152,11 +152,11 @@ async function submitReturn() {
 }
 
 function printBatch(row) {
-  window.open(`/print/outsourcing/${row.id}`, '_blank');
+  window.open(`${import.meta.env.BASE_URL}print/outsourcing/${row.id}`, '_blank');
 }
 
 function printPO(row) {
-  window.open(`/print/outsourcing/${row.id}/po`, '_blank');
+  window.open(`${import.meta.env.BASE_URL}print/outsourcing/${row.id}/po`, '_blank');
 }
 
 async function unreturnPiece(row) {

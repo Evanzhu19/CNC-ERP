@@ -14,15 +14,21 @@ const PORT = Number(process.env.PORT || 3000);
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
-app.use('/api', authRouter);
-app.use('/api', requireAuth, basicsRouter);
-app.use('/api', requireAuth, ordersRouter);
-app.use('/api', requireAuth, productionRouter);
+// 统一门户：ERP 挂在 /erp 前缀下（80端口网关反代过来带前缀）；
+// /api 双挂载保持兼容，:3000 直连和网关两条路都通
+for (const prefix of ['/api', '/erp/api']) {
+  app.use(prefix, authRouter);
+  app.use(prefix, requireAuth, basicsRouter);
+  app.use(prefix, requireAuth, ordersRouter);
+  app.use(prefix, requireAuth, productionRouter);
+}
 
 const distDir = path.join(__dirname, '..', 'web', 'dist');
 if (existsSync(distDir)) {
-  app.use(express.static(distDir));
-  app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(distDir, 'index.html')));
+  app.use('/erp', express.static(distDir));
+  app.get(/^\/erp(\/.*)?$/, (req, res) => res.sendFile(path.join(distDir, 'index.html')));
+  // 旧书签兼容：:3000/orders 之类的老地址 302 到 /erp 前缀下
+  app.get(/^\/(?!api\/|erp\/|erp$).*/, (req, res) => res.redirect(302, '/erp' + (req.originalUrl === '/' ? '/' : req.originalUrl)));
 }
 
 app.use((err, req, res, next) => {

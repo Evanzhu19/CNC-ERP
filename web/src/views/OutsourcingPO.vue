@@ -124,7 +124,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, token, canEntry } from '../api.js';
+import { api, API_BASE, token, canEntry } from '../api.js';
 import { outTypeLabel } from '../consts.js';
 
 const route = useRoute();
@@ -132,7 +132,7 @@ const data = ref(null);
 const settings = ref({});
 const companyName = ref('');
 const hasLogo = ref(false);
-const logoUrl = `/api/settings/logo?token=${token()}`;
+const logoUrl = `${API_BASE}/settings/logo?token=${token()}`;
 const entry = canEntry();
 
 function cnDate(d) {

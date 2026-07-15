@@ -78,7 +78,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
-import { api, canSeePrice, token } from '../api.js';
+import { api, API_BASE, canSeePrice, token } from '../api.js';
 
 const route = useRoute();
 const data = ref(null);
@@ -86,7 +86,7 @@ const allowPrice = canSeePrice();
 const withPrice = ref(false);
 const companyName = ref('');
 const hasLogo = ref(false);
-const logoUrl = `/api/settings/logo?token=${token()}`;
+const logoUrl = `${API_BASE}/settings/logo?token=${token()}`;
 
 const totalQty = computed(() => data.value ? data.value.lines.reduce((s, l) => s + l.qty, 0) : 0);
 const totalAmount = computed(() => {

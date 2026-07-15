@@ -152,7 +152,7 @@
                 图纸 {{ drawingDone }}/{{ detail.items.length }}
               </el-tag>
               <div style="flex: 1"></div>
-              <el-upload v-if="entry" :action="`/api/orders/${detail.order.id}/attachments`" :headers="{ Authorization: 'Bearer ' + tk }"
+              <el-upload v-if="entry" :action="`${API_BASE}/orders/${detail.order.id}/attachments`" :headers="{ Authorization: 'Bearer ' + tk }"
                 name="files" multiple :show-file-list="false" :on-success="load" :on-error="uploadError">
                 <el-button size="small" plain>上传订单附件</el-button>
               </el-upload>
@@ -169,13 +169,13 @@
               </el-tag>
               <el-tag v-else type="danger" size="small">未传图纸</el-tag>
               <div style="flex: 1"></div>
-              <el-upload v-if="entry" :action="`/api/orders/${detail.order.id}/attachments`" :headers="{ Authorization: 'Bearer ' + tk }"
+              <el-upload v-if="entry" :action="`${API_BASE}/orders/${detail.order.id}/attachments`" :headers="{ Authorization: 'Bearer ' + tk }"
                 :data="{ item_id: it.id }" name="files" multiple :show-file-list="false" :on-success="load" :on-error="uploadError">
                 <el-button text type="primary" size="small">传图纸</el-button>
               </el-upload>
             </div>
             <div v-for="a in attachByItem[it.id] || []" :key="a.id" class="draw-file">
-              <a :href="`/api/attachments/${a.id}/download?token=${tk}`" target="_blank">{{ a.orig_name }}</a>
+              <a :href="`${API_BASE}/attachments/${a.id}/download?token=${tk}`" target="_blank">{{ a.orig_name }}</a>
               <span class="draw-meta">{{ (a.size / 1024 / 1024).toFixed(2) }} MB · {{ a.uploaded_by_name }}</span>
               <el-button v-if="entry" text type="danger" size="small" @click="delAttachment(a)">删</el-button>
             </div>
@@ -186,7 +186,7 @@
               <span style="font-size: 12px; color: #909399">订单附件（不属于某个图号，如客户PO留档）</span>
             </el-divider>
             <div v-for="a in orderAttachments" :key="a.id" class="draw-file">
-              <a :href="`/api/attachments/${a.id}/download?token=${tk}`" target="_blank">{{ a.orig_name }}</a>
+              <a :href="`${API_BASE}/attachments/${a.id}/download?token=${tk}`" target="_blank">{{ a.orig_name }}</a>
               <span class="draw-meta">{{ (a.size / 1024 / 1024).toFixed(2) }} MB · {{ a.uploaded_by_name }}</span>
               <el-select v-if="entry" placeholder="归到图号" size="small" style="width: 150px"
                 :model-value="null" @change="v => assignAttachment(a, v)">
@@ -373,7 +373,7 @@ import { ref, computed, watch, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { ArrowLeft } from '@element-plus/icons-vue';
-import { api, canSeePrice, canEntry, token, getUser } from '../api.js';
+import { api, API_BASE, canSeePrice, canEntry, token, getUser } from '../api.js';
 import { ORDER_STATUS, outTypeLabel, PIECE_FLAGS } from '../consts.js';
 
 const route = useRoute();

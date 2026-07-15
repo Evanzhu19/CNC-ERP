@@ -138,7 +138,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, getUser, token } from '../api.js';
+import { api, API_BASE, getUser, token } from '../api.js';
 import { VENDOR_TYPES } from '../consts.js';
 
 const tab = ref('customers');
@@ -155,7 +155,7 @@ const vendorForm = ref({});
 const canSettings = ['admin', 'cnc_manager'].includes(user?.role);
 const settings = ref({ company_name: '', has_logo: false });
 const logoVersion = ref(0);
-const logoUrl = computed(() => `/api/settings/logo?token=${token()}&v=${logoVersion.value}`);
+const logoUrl = computed(() => `${API_BASE}/settings/logo?token=${token()}&v=${logoVersion.value}`);
 
 async function loadSettings() {
   const { data } = await api.get('/settings');

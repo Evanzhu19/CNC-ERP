@@ -17,3 +17,12 @@ services:
     environment:
       - TZ=Asia/Shanghai
     restart: unless-stopped
+    networks:
+      - default
+      - factory-net
+
+# 与刀具系统共享的网络（80端口网关按容器名 cnc-erp 反代过来）
+# 首次使用前先执行一次：docker network create factory-net
+networks:
+  factory-net:
+    external: true
