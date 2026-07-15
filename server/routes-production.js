@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { db, today, lastActExpr } from './db.js';
 import { requireRole, canSeePrice, ENTRY_ROLES } from './auth.js';
+import { vehiclesDueSoon } from './routes-finance.js';
 
 export const productionRouter = Router();
 
@@ -721,6 +722,7 @@ productionRouter.get('/dashboard', (req, res) => {
 
   res.json({
     active_orders: activeOrders, stages: stagesAgg, outsourcing_open: outOpen, due_soon: dueSoon,
-    stalled, stall_warn_days: warnDays, stall_alert_days: alertDays, flagged_pieces: flagged
+    stalled, stall_warn_days: warnDays, stall_alert_days: alertDays, flagged_pieces: flagged,
+    vehicles_due: vehiclesDueSoon()
   });
 });

@@ -7,6 +7,7 @@ import { requireAuth } from './auth.js';
 import { authRouter, basicsRouter } from './routes-basics.js';
 import { ordersRouter, purgeExpiredVoidedOrders } from './routes-orders.js';
 import { productionRouter } from './routes-production.js';
+import { financeRouter } from './routes-finance.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -21,6 +22,7 @@ for (const prefix of ['/api', '/erp/api']) {
   app.use(prefix, requireAuth, basicsRouter);
   app.use(prefix, requireAuth, ordersRouter);
   app.use(prefix, requireAuth, productionRouter);
+  app.use(prefix, requireAuth, financeRouter);
 }
 
 const distDir = path.join(__dirname, '..', 'web', 'dist');

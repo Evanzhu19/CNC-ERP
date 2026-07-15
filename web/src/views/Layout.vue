@@ -8,6 +8,8 @@
         <el-menu-item index="/pieces"><el-icon><Search /></el-icon>板件查询</el-menu-item>
         <el-menu-item index="/outsourcing"><el-icon><Van /></el-icon>外发管理</el-menu-item>
         <el-menu-item index="/shipments"><el-icon><Tickets /></el-icon>送货单</el-menu-item>
+        <el-menu-item v-if="seePrice" index="/receivables"><el-icon><Money /></el-icon>应收账款</el-menu-item>
+        <el-menu-item index="/vehicles"><el-icon><AlarmClock /></el-icon>车辆提醒</el-menu-item>
         <el-menu-item index="/basics"><el-icon><OfficeBuilding /></el-icon>客户与厂家</el-menu-item>
         <el-menu-item v-if="['admin', 'procurement'].includes(user?.role)" index="/users"><el-icon><User /></el-icon>用户管理</el-menu-item>
       </el-menu>
@@ -48,13 +50,14 @@
 import { ref, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { Odometer, Document, Van, OfficeBuilding, User, ArrowDown, Search, Tickets } from '@element-plus/icons-vue';
-import { api, getUser } from '../api.js';
+import { Odometer, Document, Van, OfficeBuilding, User, ArrowDown, Search, Tickets, Money, AlarmClock } from '@element-plus/icons-vue';
+import { api, getUser, canSeePrice } from '../api.js';
 import { ROLE_NAMES } from '../consts.js';
 
 const route = useRoute();
 const router = useRouter();
 const user = getUser();
+const seePrice = canSeePrice();
 const roleName = computed(() => ROLE_NAMES[user?.role] || user?.role);
 const activeMenu = computed(() => {
   if (route.path.startsWith('/orders')) return '/orders';

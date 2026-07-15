@@ -87,6 +87,26 @@
       </el-table>
       <el-empty v-if="!data.due_soon.length" description="最近7天没有到期的订单" :image-size="60" />
     </el-card>
+
+    <el-card v-if="data.vehicles_due && data.vehicles_due.length" shadow="never" style="margin-top: 16px;">
+      <template #header>🚗 车辆年检 / 保险提醒（30天内到期或已过期）</template>
+      <el-table :data="data.vehicles_due" @row-click="() => $router.push('/vehicles')" style="cursor:pointer">
+        <el-table-column prop="plate_no" label="车牌" width="130">
+          <template #default="{ row }"><b>{{ row.plate_no }}</b></template>
+        </el-table-column>
+        <el-table-column prop="name" label="车辆" min-width="120">
+          <template #default="{ row }">{{ row.name || '—' }}</template>
+        </el-table-column>
+        <el-table-column prop="kind" label="事项" width="110" />
+        <el-table-column prop="date" label="到期日" width="120" />
+        <el-table-column label="剩余" width="150">
+          <template #default="{ row }">
+            <el-tag v-if="row.days_left < 0" type="danger" size="small">已过期 {{ -row.days_left }} 天</el-tag>
+            <el-tag v-else type="warning" size="small">{{ row.days_left }} 天后到期</el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
   </div>
 </template>
 

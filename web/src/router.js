@@ -17,6 +17,8 @@ const routes = [
       { path: 'orders/:id/edit', component: () => import('./views/OrderEdit.vue') },
       { path: 'outsourcing', component: () => import('./views/Outsourcing.vue') },
       { path: 'shipments', component: () => import('./views/Shipments.vue') },
+      { path: 'receivables', component: () => import('./views/Receivables.vue') },
+      { path: 'vehicles', component: () => import('./views/Vehicles.vue') },
       { path: 'basics', component: () => import('./views/Basics.vue') },
       { path: 'users', component: () => import('./views/Users.vue') }
     ]
