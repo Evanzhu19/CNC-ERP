@@ -1,7 +1,7 @@
 <template>
   <el-card shadow="never">
     <div class="toolbar">
-      <span style="color:#909399; font-size:13px">年检或商业保险到期前 30 天黄色提醒、过期红色报警，看板首页同步显示</span>
+      <span style="color:#909399; font-size:13px">年检/商业保险：到期前 30 天黄色提醒、前 14 天红色报警（不允许过期），看板首页同步显示</span>
       <div style="flex: 1"></div>
       <el-button v-if="editable" type="primary" @click="openForm(null)">+ 添加车辆</el-button>
     </div>
@@ -71,7 +71,9 @@ const DueCell = {
     if (!d) return h('span', { style: 'color:#c0c4cc' }, '未填');
     const parts = [h('span', d.date)];
     if (d.level === 'overdue') {
-      parts.push(h(ElTag, { type: 'danger', size: 'small', style: 'margin-left:6px' }, () => `已过期 ${-d.days_left} 天`));
+      parts.push(h(ElTag, { type: 'danger', size: 'small', style: 'margin-left:6px' }, () => `已过期 ${-d.days_left} 天！`));
+    } else if (d.level === 'alert') {
+      parts.push(h(ElTag, { type: 'danger', size: 'small', style: 'margin-left:6px' }, () => `仅剩 ${d.days_left} 天`));
     } else if (d.level === 'warn') {
       parts.push(h(ElTag, { type: 'warning', size: 'small', style: 'margin-left:6px' }, () => `${d.days_left} 天后到期`));
     }
@@ -88,7 +90,7 @@ const form = ref({});
 
 function rowClass({ row }) {
   const lv = [row.inspection?.level, row.insurance?.level];
-  if (lv.includes('overdue')) return 'stall-alert';
+  if (lv.includes('overdue') || lv.includes('alert')) return 'stall-alert';
   if (lv.includes('warn')) return 'stall-warn';
   return '';
 }

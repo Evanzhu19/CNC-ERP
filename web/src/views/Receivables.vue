@@ -8,7 +8,8 @@
         <el-option label="全部" value="all" />
       </el-select>
       <div style="flex: 1"></div>
-      <el-button type="primary" @click="openForm(null)">+ 记一笔应收</el-button>
+      <el-tag v-if="!canEdit" type="info">总经理查看模式（仅财务可操作）</el-tag>
+      <el-button v-if="canEdit" type="primary" @click="openForm(null)">+ 记一笔应收</el-button>
     </div>
 
     <div v-if="totals" class="summary">
@@ -21,9 +22,10 @@
     <el-table :data="filtered" v-loading="loading" :row-class-name="rowClass">
       <el-table-column label="催款" width="70" align="center">
         <template #default="{ row }">
-          <el-tooltip :content="row.remind ? '点击取消催款标记' : '点击标记为需要催款'">
+          <el-tooltip v-if="canEdit" :content="row.remind ? '点击取消催款标记' : '点击标记为需要催款'">
             <span class="bell" :class="{ on: row.remind }" @click="toggleRemind(row)">{{ row.remind ? '🔔' : '🔕' }}</span>
           </el-tooltip>
+          <span v-else class="bell" :class="{ on: row.remind }" style="cursor: default">{{ row.remind ? '🔔' : '🔕' }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="customer" label="客户/单位" min-width="140" show-overflow-tooltip />
@@ -57,7 +59,7 @@
       <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip>
         <template #default="{ row }">{{ row.note || '—' }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="150">
+      <el-table-column v-if="canEdit" label="操作" width="150">
         <template #default="{ row }">
           <el-button v-if="row.balance > 0.005" text type="success" size="small" @click="receive(row)">收款</el-button>
           <el-button text type="primary" size="small" @click="openForm(row)">编辑</el-button>
@@ -110,8 +112,10 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api } from '../api.js';
+import { api, getUser } from '../api.js';
 
+// 只有财务能操作；总经理只读（服务端同样强制）
+const canEdit = getUser()?.role === 'finance';
 const rows = ref([]);
 const totals = ref(null);
 const loading = ref(false);

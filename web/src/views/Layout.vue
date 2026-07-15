@@ -57,7 +57,8 @@ import { ROLE_NAMES } from '../consts.js';
 const route = useRoute();
 const router = useRouter();
 const user = getUser();
-const canFinance = ['admin', 'procurement', 'finance'].includes(user?.role);
+// 应收账款仅 财务(可操作) 和 总经理(只读) 可见，其余角色（含采购主管）完全不可见
+const canFinance = ['admin', 'finance'].includes(user?.role);
 const roleName = computed(() => ROLE_NAMES[user?.role] || user?.role);
 const activeMenu = computed(() => {
   if (route.path.startsWith('/orders')) return '/orders';

@@ -101,7 +101,8 @@
         <el-table-column prop="date" label="到期日" width="120" />
         <el-table-column label="剩余" width="150">
           <template #default="{ row }">
-            <el-tag v-if="row.days_left < 0" type="danger" size="small">已过期 {{ -row.days_left }} 天</el-tag>
+            <el-tag v-if="row.level === 'overdue'" type="danger" size="small">已过期 {{ -row.days_left }} 天！</el-tag>
+            <el-tag v-else-if="row.level === 'alert'" type="danger" size="small">仅剩 {{ row.days_left }} 天</el-tag>
             <el-tag v-else type="warning" size="small">{{ row.days_left }} 天后到期</el-tag>
           </template>
         </el-table-column>

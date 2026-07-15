@@ -5,11 +5,14 @@ import { requireRole, BASICS_ROLES } from './auth.js';
 export const financeRouter = Router();
 
 // 财务台账：独立手工账（含模具钢材等CNC之外的业务），与订单/出货数据完全无关
-const FIN_ROLES = ['admin', 'procurement', 'finance'];
+// 权限锁死：财务=看+操作；总经理=只读；其余角色（含采购主管）一律不可见不可操作。
+// 所有校验都在服务端逐接口强制，前端只是隐藏入口。
+const FIN_VIEW = ['admin', 'finance'];
+const FIN_EDIT = ['finance'];
 
 const round2 = v => Math.round(Number(v || 0) * 100) / 100;
 
-financeRouter.get('/finance/entries', requireRole(...FIN_ROLES), (req, res) => {
+financeRouter.get('/finance/entries', requireRole(...FIN_VIEW), (req, res) => {
   const rows = db.prepare(`
     SELECT f.*, u.name AS created_by_name
     FROM finance_entries f LEFT JOIN users u ON u.id = f.created_by
@@ -42,7 +45,7 @@ function validEntry(body) {
   return null;
 }
 
-financeRouter.post('/finance/entries', requireRole(...FIN_ROLES), (req, res) => {
+financeRouter.post('/finance/entries', requireRole(...FIN_EDIT), (req, res) => {
   const err = validEntry(req.body);
   if (err) return res.status(400).json({ error: err });
   const b = req.body;
@@ -54,7 +57,7 @@ financeRouter.post('/finance/entries', requireRole(...FIN_ROLES), (req, res) => 
   res.json({ id: Number(r.lastInsertRowid) });
 });
 
-financeRouter.put('/finance/entries/:id', requireRole(...FIN_ROLES), (req, res) => {
+financeRouter.put('/finance/entries/:id', requireRole(...FIN_EDIT), (req, res) => {
   const row = db.prepare('SELECT id FROM finance_entries WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: '记录不存在' });
   const err = validEntry(req.body);
@@ -69,7 +72,7 @@ financeRouter.put('/finance/entries/:id', requireRole(...FIN_ROLES), (req, res) 
 });
 
 // 快捷操作：登记收款（累加）/ 切换催款标记
-financeRouter.post('/finance/entries/:id/receive', requireRole(...FIN_ROLES), (req, res) => {
+financeRouter.post('/finance/entries/:id/receive', requireRole(...FIN_EDIT), (req, res) => {
   const row = db.prepare('SELECT * FROM finance_entries WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: '记录不存在' });
   const amt = Number(req.body?.amount);
@@ -81,7 +84,7 @@ financeRouter.post('/finance/entries/:id/receive', requireRole(...FIN_ROLES), (r
   res.json({ ok: true, received: newReceived });
 });
 
-financeRouter.post('/finance/entries/:id/remind', requireRole(...FIN_ROLES), (req, res) => {
+financeRouter.post('/finance/entries/:id/remind', requireRole(...FIN_EDIT), (req, res) => {
   const row = db.prepare('SELECT id, remind FROM finance_entries WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: '记录不存在' });
   const next = row.remind ? 0 : 1;
@@ -89,16 +92,17 @@ financeRouter.post('/finance/entries/:id/remind', requireRole(...FIN_ROLES), (re
   res.json({ ok: true, remind: next });
 });
 
-financeRouter.delete('/finance/entries/:id', requireRole(...FIN_ROLES), (req, res) => {
+financeRouter.delete('/finance/entries/:id', requireRole(...FIN_EDIT), (req, res) => {
   db.prepare('DELETE FROM finance_entries WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 
-// ===== 车辆：年检 / 商业保险 到期提醒（提前30天） =====
+// ===== 车辆：年检 / 商业保险 到期提醒（提前30天黄、提前14天红，不允许过期） =====
 function vehicleDue(dateStr) {
   if (!dateStr) return null;
   const days = Math.round((Date.parse(dateStr) - Date.parse(today())) / 86400_000);
-  return { date: dateStr, days_left: days, level: days < 0 ? 'overdue' : days <= 30 ? 'warn' : 'ok' };
+  const level = days < 0 ? 'overdue' : days <= 14 ? 'alert' : days <= 30 ? 'warn' : 'ok';
+  return { date: dateStr, days_left: days, level };
 }
 
 export function vehiclesDueSoon() {
