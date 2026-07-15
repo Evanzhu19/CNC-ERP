@@ -1,101 +1,96 @@
 import { Router } from 'express';
 import { db, today } from './db.js';
-import { requireRole, canSeePrice, PRICE_ROLES, BASICS_ROLES } from './auth.js';
+import { requireRole, BASICS_ROLES } from './auth.js';
 
 export const financeRouter = Router();
 
-// 回款登记/删除权限：管钱的三个角色
-const PAY_ROLES = ['admin', 'procurement', 'finance'];
+// 财务台账：独立手工账（含模具钢材等CNC之外的业务），与订单/出货数据完全无关
+const FIN_ROLES = ['admin', 'procurement', 'finance'];
 
-// ===== 应收账款：按客户汇总 已出货金额 - 已回款 = 余额 =====
-financeRouter.get('/receivables', requireRole(...PRICE_ROLES), (req, res) => {
+const round2 = v => Math.round(Number(v || 0) * 100) / 100;
+
+financeRouter.get('/finance/entries', requireRole(...FIN_ROLES), (req, res) => {
   const rows = db.prepare(`
-    SELECT c.id AS customer_id, c.name AS customer_name,
-      COALESCE(sh.shipped_amount, 0) AS shipped_amount,
-      COALESCE(sh.shipped_pieces, 0) AS shipped_pieces,
-      COALESCE(sh.unpriced_pieces, 0) AS unpriced_pieces,
-      sh.last_ship_date,
-      COALESCE(pay.paid_amount, 0) AS paid_amount,
-      pay.last_pay_date
-    FROM customers c
-    LEFT JOIN (
-      SELECT o.customer_id,
-        SUM(COALESCE(i.unit_price, 0)) AS shipped_amount,
-        COUNT(*) AS shipped_pieces,
-        SUM(CASE WHEN i.unit_price IS NULL THEN 1 ELSE 0 END) AS unpriced_pieces,
-        MAX(s.ship_date) AS last_ship_date
-      FROM shipment_pieces sp
-      JOIN shipments s ON s.id = sp.shipment_id
-      JOIN pieces p ON p.id = sp.piece_id
-      JOIN order_items i ON i.id = p.item_id
-      JOIN orders o ON o.id = p.order_id
-      WHERE o.status != 'void'
-      GROUP BY o.customer_id
-    ) sh ON sh.customer_id = c.id
-    LEFT JOIN (
-      SELECT customer_id, SUM(amount) AS paid_amount, MAX(pay_date) AS last_pay_date
-      FROM payments GROUP BY customer_id
-    ) pay ON pay.customer_id = c.id
-    WHERE sh.customer_id IS NOT NULL OR pay.customer_id IS NOT NULL
+    SELECT f.*, u.name AS created_by_name
+    FROM finance_entries f LEFT JOIN users u ON u.id = f.created_by
+    ORDER BY f.remind DESC, f.entry_date DESC, f.id DESC
   `).all();
-  const out = rows.map(r => ({
+  const entries = rows.map(r => ({
     ...r,
-    shipped_amount: Math.round(r.shipped_amount * 100) / 100,
-    paid_amount: Math.round(r.paid_amount * 100) / 100,
-    balance: Math.round((r.shipped_amount - r.paid_amount) * 100) / 100
-  })).sort((a, b) => b.balance - a.balance);
+    amount: round2(r.amount),
+    received: round2(r.received),
+    balance: round2(r.amount - r.received)
+  }));
+  const owed = entries.filter(e => e.balance > 0.005);
   const totals = {
-    shipped: Math.round(out.reduce((s, r) => s + r.shipped_amount, 0) * 100) / 100,
-    paid: Math.round(out.reduce((s, r) => s + r.paid_amount, 0) * 100) / 100,
-    balance: Math.round(out.reduce((s, r) => s + r.balance, 0) * 100) / 100
+    amount: round2(entries.reduce((s, e) => s + e.amount, 0)),
+    received: round2(entries.reduce((s, e) => s + e.received, 0)),
+    balance: round2(entries.reduce((s, e) => s + e.balance, 0)),
+    owed_count: owed.length,
+    remind_count: owed.filter(e => e.remind).length,
+    remind_balance: round2(owed.filter(e => e.remind).reduce((s, e) => s + e.balance, 0))
   };
-  res.json({ receivables: out, totals });
+  res.json({ entries, totals });
 });
 
-// 单客户明细：按订单的出货金额 + 回款流水
-financeRouter.get('/receivables/:customerId', requireRole(...PRICE_ROLES), (req, res) => {
-  const cust = db.prepare('SELECT id, name FROM customers WHERE id = ?').get(req.params.customerId);
-  if (!cust) return res.status(404).json({ error: '客户不存在' });
-  const orders = db.prepare(`
-    SELECT o.id AS order_id, o.order_no, o.customer_po, o.status,
-      COUNT(*) AS shipped_pieces,
-      SUM(COALESCE(i.unit_price, 0)) AS shipped_amount,
-      SUM(CASE WHEN i.unit_price IS NULL THEN 1 ELSE 0 END) AS unpriced_pieces,
-      MIN(s.ship_date) AS first_ship, MAX(s.ship_date) AS last_ship
-    FROM shipment_pieces sp
-    JOIN shipments s ON s.id = sp.shipment_id
-    JOIN pieces p ON p.id = sp.piece_id
-    JOIN order_items i ON i.id = p.item_id
-    JOIN orders o ON o.id = p.order_id
-    WHERE o.customer_id = ? AND o.status != 'void'
-    GROUP BY o.id
-    ORDER BY o.order_no DESC
-  `).all(cust.id).map(r => ({ ...r, shipped_amount: Math.round(r.shipped_amount * 100) / 100 }));
-  const payments = db.prepare(`
-    SELECT pm.id, pm.amount, pm.pay_date, pm.method, pm.note, u.name AS created_by_name
-    FROM payments pm LEFT JOIN users u ON u.id = pm.created_by
-    WHERE pm.customer_id = ? ORDER BY pm.pay_date DESC, pm.id DESC
-  `).all(cust.id);
-  res.json({ customer: cust, orders, payments });
-});
+function validEntry(body) {
+  const { customer, amount, entry_date } = body || {};
+  if (!customer || !String(customer).trim()) return '请填写客户/单位名称';
+  if (!(Number(amount) > 0)) return '应收金额必须大于0';
+  if (!entry_date || !/^\d{4}-\d{2}-\d{2}$/.test(String(entry_date))) return '请选择记账日期';
+  if (body.received != null && Number(body.received) < 0) return '已收金额不能为负';
+  return null;
+}
 
-financeRouter.post('/payments', requireRole(...PAY_ROLES), (req, res) => {
-  const { customer_id, amount, pay_date, method, note } = req.body || {};
-  const cust = db.prepare('SELECT id FROM customers WHERE id = ?').get(customer_id);
-  if (!cust) return res.status(400).json({ error: '请选择客户' });
-  const amt = Number(amount);
-  if (!(amt > 0)) return res.status(400).json({ error: '回款金额必须大于0' });
-  if (!pay_date || !/^\d{4}-\d{2}-\d{2}$/.test(String(pay_date))) return res.status(400).json({ error: '请选择回款日期' });
-  const r = db.prepare(
-    'INSERT INTO payments (customer_id, amount, pay_date, method, note, created_by) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(cust.id, amt, pay_date, method || null, note || null, req.user.id);
+financeRouter.post('/finance/entries', requireRole(...FIN_ROLES), (req, res) => {
+  const err = validEntry(req.body);
+  if (err) return res.status(400).json({ error: err });
+  const b = req.body;
+  const r = db.prepare(`
+    INSERT INTO finance_entries (customer, biz, title, amount, received, entry_date, due_date, remind, note, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(String(b.customer).trim(), b.biz || null, b.title || null, Number(b.amount),
+    Number(b.received || 0), b.entry_date, b.due_date || null, b.remind ? 1 : 0, b.note || null, req.user.id);
   res.json({ id: Number(r.lastInsertRowid) });
 });
 
-financeRouter.delete('/payments/:id', requireRole(...PAY_ROLES), (req, res) => {
-  const row = db.prepare('SELECT id FROM payments WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ error: '回款记录不存在' });
-  db.prepare('DELETE FROM payments WHERE id = ?').run(row.id);
+financeRouter.put('/finance/entries/:id', requireRole(...FIN_ROLES), (req, res) => {
+  const row = db.prepare('SELECT id FROM finance_entries WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: '记录不存在' });
+  const err = validEntry(req.body);
+  if (err) return res.status(400).json({ error: err });
+  const b = req.body;
+  db.prepare(`
+    UPDATE finance_entries SET customer = ?, biz = ?, title = ?, amount = ?, received = ?,
+      entry_date = ?, due_date = ?, remind = ?, note = ? WHERE id = ?
+  `).run(String(b.customer).trim(), b.biz || null, b.title || null, Number(b.amount),
+    Number(b.received || 0), b.entry_date, b.due_date || null, b.remind ? 1 : 0, b.note || null, row.id);
+  res.json({ ok: true });
+});
+
+// 快捷操作：登记收款（累加）/ 切换催款标记
+financeRouter.post('/finance/entries/:id/receive', requireRole(...FIN_ROLES), (req, res) => {
+  const row = db.prepare('SELECT * FROM finance_entries WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: '记录不存在' });
+  const amt = Number(req.body?.amount);
+  if (!(amt > 0)) return res.status(400).json({ error: '收款金额必须大于0' });
+  const newReceived = round2(row.received + amt);
+  // 收清后自动取消催款标记
+  const remind = newReceived >= row.amount - 0.005 ? 0 : row.remind;
+  db.prepare('UPDATE finance_entries SET received = ?, remind = ? WHERE id = ?').run(newReceived, remind, row.id);
+  res.json({ ok: true, received: newReceived });
+});
+
+financeRouter.post('/finance/entries/:id/remind', requireRole(...FIN_ROLES), (req, res) => {
+  const row = db.prepare('SELECT id, remind FROM finance_entries WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: '记录不存在' });
+  const next = row.remind ? 0 : 1;
+  db.prepare('UPDATE finance_entries SET remind = ? WHERE id = ?').run(next, row.id);
+  res.json({ ok: true, remind: next });
+});
+
+financeRouter.delete('/finance/entries/:id', requireRole(...FIN_ROLES), (req, res) => {
+  db.prepare('DELETE FROM finance_entries WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 

@@ -218,14 +218,18 @@ rebuildTable('users', `CREATE TABLE users (
 )`, sql => !sql.includes('procurement'));
 try { db.exec('ALTER TABLE outsourcing ADD COLUMN requirements TEXT'); } catch { /* 列已存在 */ }
 
-// 财务：客户回款记录（应收 = 已出货金额 - 回款）
+// 财务应收台账：独立手工账，不与CNC订单数据关联（含模具钢材等其他业务）
 db.exec(`
-CREATE TABLE IF NOT EXISTS payments (
+CREATE TABLE IF NOT EXISTS finance_entries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  customer_id INTEGER NOT NULL REFERENCES customers(id),
+  customer TEXT NOT NULL,
+  biz TEXT,
+  title TEXT,
   amount REAL NOT NULL,
-  pay_date TEXT NOT NULL,
-  method TEXT,
+  received REAL NOT NULL DEFAULT 0,
+  entry_date TEXT NOT NULL,
+  due_date TEXT,
+  remind INTEGER NOT NULL DEFAULT 0,
   note TEXT,
   created_by INTEGER REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
@@ -239,6 +243,8 @@ CREATE TABLE IF NOT EXISTS vehicles (
   note TEXT,
   active INTEGER NOT NULL DEFAULT 1
 );`);
+// 旧方案（按出货算应收）已废弃，payments 表从未投入使用，清掉
+db.exec('DROP TABLE IF EXISTS payments');
 // 电镀外发单专用加工要求模板（开单时预填可改，如镀层厚度8μm/10μm）
 db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('out_requirements_plating', '镀硬铬，镀层厚度：8μm，镀层均匀，不得有烧焦、起泡、脱皮、露底；孔内及螺纹按图纸要求防护；回厂前做好防潮防刮包装。')`).run();
 // 外发单（采购订单版）打印抬头与条款默认值，可在系统设置里改
