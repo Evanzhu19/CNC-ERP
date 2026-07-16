@@ -7,8 +7,10 @@
     "start": "node server/index.js",
     "dev": "node server/index.js",
     "build:web": "npm --prefix web run build",
-    "test": "node tests/regress.mjs && node tests/security.mjs",
+    "test": "node tests/regress.mjs && node tests/business.mjs && node tests/chaos.mjs && node tests/security.mjs",
     "test:regress": "node tests/regress.mjs",
+    "test:business": "node tests/business.mjs",
+    "test:chaos": "node tests/chaos.mjs",
     "test:security": "node tests/security.mjs",
     "test:perf": "node tests/perf.mjs"
   },
