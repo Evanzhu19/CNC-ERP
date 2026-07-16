@@ -245,6 +245,19 @@ CREATE TABLE IF NOT EXISTS vehicles (
 );`);
 // 旧方案（按出货算应收）已废弃，payments 表从未投入使用，清掉
 db.exec('DROP TABLE IF EXISTS payments');
+
+// 财务台账扩展：应收/应付两本账 + 收付款流水（供按期间统计实收实付）
+try { db.exec(`ALTER TABLE finance_entries ADD COLUMN kind TEXT NOT NULL DEFAULT 'receivable'`); } catch { /* 列已存在 */ }
+db.exec(`
+CREATE TABLE IF NOT EXISTS finance_payments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES finance_entries(id),
+  kind TEXT NOT NULL,
+  amount REAL NOT NULL,
+  pay_date TEXT NOT NULL,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);`);
 // 电镀外发单专用加工要求模板（开单时预填可改，如镀层厚度8μm/10μm）
 db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('out_requirements_plating', '镀硬铬，镀层厚度：8μm，镀层均匀，不得有烧焦、起泡、脱皮、露底；孔内及螺纹按图纸要求防护；回厂前做好防潮防刮包装。')`).run();
 // 外发单（采购订单版）打印抬头与条款默认值，可在系统设置里改
