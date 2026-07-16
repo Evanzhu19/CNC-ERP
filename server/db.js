@@ -218,22 +218,8 @@ rebuildTable('users', `CREATE TABLE users (
 )`, sql => !sql.includes('procurement'));
 try { db.exec('ALTER TABLE outsourcing ADD COLUMN requirements TEXT'); } catch { /* 列已存在 */ }
 
-// 财务应收台账：独立手工账，不与CNC订单数据关联（含模具钢材等其他业务）
+// 车辆档案（年检/保险到期提醒）
 db.exec(`
-CREATE TABLE IF NOT EXISTS finance_entries (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  customer TEXT NOT NULL,
-  biz TEXT,
-  title TEXT,
-  amount REAL NOT NULL,
-  received REAL NOT NULL DEFAULT 0,
-  entry_date TEXT NOT NULL,
-  due_date TEXT,
-  remind INTEGER NOT NULL DEFAULT 0,
-  note TEXT,
-  created_by INTEGER REFERENCES users(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-);
 CREATE TABLE IF NOT EXISTS vehicles (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   plate_no TEXT UNIQUE NOT NULL,
@@ -246,18 +232,25 @@ CREATE TABLE IF NOT EXISTS vehicles (
 // 旧方案（按出货算应收）已废弃，payments 表从未投入使用，清掉
 db.exec('DROP TABLE IF EXISTS payments');
 
-// 财务台账扩展：应收/应付两本账 + 收付款流水（供按期间统计实收实付）
-try { db.exec(`ALTER TABLE finance_entries ADD COLUMN kind TEXT NOT NULL DEFAULT 'receivable'`); } catch { /* 列已存在 */ }
-// 财务数据落盘加密：敏感字段整体加密进 enc 列（迁移在 routes-finance.js 启动时做）
-try { db.exec('ALTER TABLE finance_entries ADD COLUMN enc TEXT'); } catch { /* 列已存在 */ }
-try { db.exec('ALTER TABLE finance_payments ADD COLUMN enc TEXT'); } catch { /* 列已存在 */ }
+// 旧版按笔记账模型(finance_entries/finance_payments)：不再创建；
+// 已有数据由 routes-finance.js 启动时迁移到往来账户模型后封存为 *_old
+
+// 标准往来账户模式：每个客户/供应商一个账户（期初结转+累计销售−累计回收=当前余额），
+// 流水挂账户下。敏感内容全部加密在 enc 列。旧的 finance_entries 模型由 routes-finance 迁移后封存。
 db.exec(`
-CREATE TABLE IF NOT EXISTS finance_payments (
+CREATE TABLE IF NOT EXISTS fin_accounts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  entry_id INTEGER NOT NULL REFERENCES finance_entries(id),
   kind TEXT NOT NULL,
-  amount REAL NOT NULL,
-  pay_date TEXT NOT NULL,
+  remind INTEGER NOT NULL DEFAULT 0,
+  enc TEXT NOT NULL,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS fin_txns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES fin_accounts(id),
+  kind TEXT NOT NULL,
+  enc TEXT NOT NULL,
   created_by INTEGER REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );`);

@@ -1,20 +1,19 @@
 import * as XLSX from 'xlsx';
 
-// 财务台账 Excel 导入：表头关键词识别（适配现成账本，列名对不上可在前端预览里手动改）
+// 财务账本 Excel 导入 —— 统一输出"往来账户"结构：
+//   { name(单位), biz, opening(上年结转), sales:[{date,amount,title}], payments:[{date,amount}] }
+// 支持两种格式：
+//   A. 矩阵账本（你们的《采购/销售统计表》）：每单位两行(发生额/收付款)×月份列+上年结转
+//   B. 普通流水表：一行一笔（单位/金额/已收付/日期/备注）
+
 const FIN_FIELDS = {
   customer: ['客户', '单位', '供应商', '公司', '客户名称', '单位名称', '供应商名称', '往来单位'],
   biz: ['业务', '业务类型', '类型', '类别', '款项类型'],
   title: ['事由', '摘要', '内容', '说明', '品名', '款项', '项目', '货物'],
-  amount: ['金额', '应收金额', '应付金额', '应收', '应付', '合计', '总额', '价款', '货款'],
-  received: ['已收', '已付', '回款', '已收金额', '已付金额', '实收', '实付', '收款', '付款'],
+  amount: ['金额', '应收金额', '应付金额', '应收', '应付', '合计', '总额', '价款', '货款', '销售额', '采购额'],
+  received: ['已收', '已付', '回款', '已收金额', '已付金额', '实收', '实付', '收款', '付款', '回收'],
   entry_date: ['日期', '记账日期', '开单日期', '时间', '账期'],
-  due_date: ['约定', '到期', '约定收款', '约定付款', '收款日', '付款日', '到期日', '账期日'],
   note: ['备注', '注', '说明备注']
-};
-
-export const FIN_FIELD_NAMES = {
-  customer: '客户/单位', biz: '业务类型', title: '事由', amount: '金额',
-  received: '已收/已付', entry_date: '记账日期', due_date: '约定日期', note: '备注'
 };
 
 function guessFinField(text) {
@@ -63,8 +62,9 @@ const cellText = v => {
   return String(v).trim();
 };
 
-// ===== 矩阵账本模式：适配《采购统计表》《销售统计表》格式 =====
-// 每个单位两行：采购款/销售款(每月新增) + 付款/回收款(每月实付实收)，列=上年结转+一月..十二月
+const r2 = v => Math.round(v * 100) / 100;
+
+// ===== A. 矩阵账本 =====
 const CN_MONTHS = ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'];
 const ACCRUAL_TYPES = ['采购款', '销售款', '货款'];
 const PAY_TYPES = ['付款', '回收款', '收款'];
@@ -79,7 +79,6 @@ function monthOf(text) {
 }
 
 function tryParseMatrix(rows) {
-  // 找表头行：含"序号"且至少3个月份列
   let headerIdx = -1;
   for (let i = 0; i < Math.min(rows.length, 8); i++) {
     const cells = (rows[i] || []).map(cellText);
@@ -88,118 +87,120 @@ function tryParseMatrix(rows) {
   if (headerIdx < 0) return null;
 
   const header = (rows[headerIdx] || []).map(cellText);
-  const monthCols = new Map(); // colIdx -> month(1-12)
+  const monthCols = new Map();
   header.forEach((h, c) => { const m = monthOf(h); if (m) monthCols.set(c, m); });
   const carryCol = header.findIndex(h => h.includes('结转'));
   let nameCol = header.findIndex(h => /客户|供应商|单位|名称/.test(h) && !/材料|业务/.test(h));
   const bizCol = header.findIndex(h => /^材料$|业务/.test(h.replace(/\s/g, '')));
   if (nameCol < 0) nameCol = (bizCol >= 0 ? bizCol + 1 : 1);
 
-  // 年份：标题里的 20xx，找不到用当前年
   let year = new Date().getFullYear();
   for (let i = 0; i <= headerIdx; i++) {
     const m = (rows[i] || []).map(cellText).join(' ').match(/20\d{2}/);
     if (m) { year = Number(m[0]); break; }
   }
 
-  const entries = [];
-  const payments = [];
-  let entities = 0;
-  let current = null; // { name, biz }
+  const accounts = new Map(); // name -> account
+  const acct = (name, biz) => {
+    if (!accounts.has(name)) accounts.set(name, { name, biz: biz || null, opening: 0, sales: [], payments: [] });
+    return accounts.get(name);
+  };
+  let current = null;
 
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const row = rows[i] || [];
     const cells = row.map(cellText);
     if (!cells.join('')) continue;
-    // 类型格：采购款/销售款/付款/回收款 所在列不固定，逐行找
-    let type = null, typeCol = -1;
+    let type = null;
     for (let c = 0; c < cells.length; c++) {
       const t = cells[c].replace(/\s/g, '');
-      if (ACCRUAL_TYPES.includes(t) || PAY_TYPES.includes(t)) { type = t; typeCol = c; break; }
+      if (ACCRUAL_TYPES.includes(t) || PAY_TYPES.includes(t)) { type = t; break; }
     }
     if (!type) continue;
 
     const isAccrual = ACCRUAL_TYPES.includes(type);
     if (isAccrual) {
-      const name = cellText(row[nameCol]) || (typeCol > 0 ? cellText(row[typeCol - 1]) : '');
+      const name = cellText(row[nameCol]);
       if (!name) continue;
-      current = { name, biz: bizCol >= 0 ? (cellText(row[bizCol]) || null) : null };
-      entities++;
+      current = acct(name, bizCol >= 0 ? cellText(row[bizCol]) : null);
       const carry = carryCol >= 0 ? coerceMoney(row[carryCol]) : null;
-      if (carry && carry > 0) {
-        entries.push({ customer: name, biz: current.biz, title: '上年结转', amount: Math.round(carry * 100) / 100, received: 0, entry_date: `${year}-01-01`, due_date: null, note: null });
-      }
+      if (carry) current.opening = r2(current.opening + carry);
     }
     if (!current) continue;
     for (const [c, month] of monthCols) {
       const v = coerceMoney(row[c]);
-      if (!v || v <= 0) continue;
+      if (!v || v === 0) continue;
       const mm = String(month).padStart(2, '0');
-      if (isAccrual) {
-        entries.push({ customer: current.name, biz: current.biz, title: `${CN_MONTHS[month - 1]}${type}`, amount: Math.round(v * 100) / 100, received: 0, entry_date: `${year}-${mm}-01`, due_date: null, note: null });
-      } else {
-        payments.push({ customer: current.name, amount: Math.round(v * 100) / 100, pay_date: `${year}-${mm}-01` });
-      }
+      const date = `${year}-${mm}-01`;
+      if (isAccrual) current.sales.push({ date, amount: r2(v), title: `${CN_MONTHS[month - 1]}${type}` });
+      else current.payments.push({ date, amount: r2(v) });
     }
   }
-  if (!entries.length && !payments.length) return null;
-  return { mode: 'matrix', year, entities, entries, payments };
+  if (!accounts.size) return null;
+  return { mode: 'matrix', year, accounts: [...accounts.values()] };
+}
+
+// ===== B. 普通流水表 → 聚合成账户 =====
+function tryParseFlat(rows) {
+  let headerIdx = -1, map = {};
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+    const m = {};
+    let hits = 0;
+    for (let c = 0; c < (rows[i] || []).length; c++) {
+      const f = guessFinField(cellText(rows[i][c]));
+      if (f && !(f in m)) { m[f] = c; hits++; }
+    }
+    if (hits >= 2 && ('amount' in m) && ('customer' in m || 'title' in m)) { headerIdx = i; map = m; break; }
+  }
+  if (headerIdx < 0) return null;
+
+  const accounts = new Map();
+  const acct = name => {
+    if (!accounts.has(name)) accounts.set(name, { name, biz: null, opening: 0, sales: [], payments: [] });
+    return accounts.get(name);
+  };
+  const skipped = [];
+  let lastCustomer = '';
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const row = rows[i] || [];
+    const get = f => (f in map ? row[map[f]] : null);
+    const rowText = row.map(cellText).join('');
+    if (!rowText) continue;
+    if (/合计|总计|小计/.test(rowText) && !cellText(get('customer'))) continue;
+
+    const customer = cellText(get('customer')) || lastCustomer;
+    if (cellText(get('customer'))) lastCustomer = cellText(get('customer'));
+    const amount = coerceMoney(get('amount'));
+    if (!customer && amount == null) continue;
+    if (!customer) { skipped.push({ row: i + 1, reason: '缺客户/单位' }); continue; }
+    if (amount == null || amount <= 0) { skipped.push({ row: i + 1, reason: '缺金额或金额无效' }); continue; }
+
+    const a = acct(customer);
+    if (!a.biz && cellText(get('biz'))) a.biz = cellText(get('biz'));
+    const date = coerceDate(get('entry_date'));
+    a.sales.push({ date, amount: r2(amount), title: cellText(get('title')) || cellText(get('note')) || null });
+    const rec = coerceMoney(get('received'));
+    if (rec && rec > 0) a.payments.push({ date, amount: r2(Math.min(rec, amount)) });
+  }
+  if (!accounts.size) return null;
+  return { mode: 'flat', accounts: [...accounts.values()], skipped };
 }
 
 export function parseFinanceExcel(buffer) {
   const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
   const sheets = [];
   for (const name of wb.SheetNames) {
-    const ws = wb.Sheets[name];
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
-
-    // 先试矩阵账本模式（采购/销售统计表格式）
-    const matrix = tryParseMatrix(rows);
-    if (matrix) { sheets.push({ name, ...matrix, lines: matrix.entries, skipped: [] }); continue; }
-
-    // 找表头：命中≥2个字段且含 customer 或 amount
-    let headerIdx = -1, map = {};
-    for (let i = 0; i < Math.min(rows.length, 15); i++) {
-      const m = {};
-      let hits = 0;
-      for (let c = 0; c < (rows[i] || []).length; c++) {
-        const f = guessFinField(cellText(rows[i][c]));
-        if (f && !(f in m)) { m[f] = c; hits++; }
-      }
-      if (hits >= 2 && ('amount' in m) && ('customer' in m || 'title' in m)) { headerIdx = i; map = m; break; }
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: null, raw: true });
+    const parsed = tryParseMatrix(rows) || tryParseFlat(rows);
+    if (!parsed) { sheets.push({ name, error: '没有识别到账本表格（需要单位名和金额）', accounts: [] }); continue; }
+    // 每个账户的汇总数，供预览
+    for (const a of parsed.accounts) {
+      a.sales_total = r2(a.sales.reduce((s, x) => s + x.amount, 0));
+      a.paid_total = r2(a.payments.reduce((s, x) => s + x.amount, 0));
+      a.balance = r2(a.opening + a.sales_total - a.paid_total);
+      a.txn_count = a.sales.length + a.payments.length;
     }
-    if (headerIdx < 0) { sheets.push({ name, error: '没有识别到表头（需要含 客户/单位 和 金额 之类的列名）', headers: [], lines: [] }); continue; }
-
-    const headers = (rows[headerIdx] || []).map(cellText);
-    const lines = [];
-    const skipped = [];
-    let lastCustomer = '';
-    for (let i = headerIdx + 1; i < rows.length; i++) {
-      const row = rows[i] || [];
-      const get = f => (f in map ? row[map[f]] : null);
-      const rowText = row.map(cellText).join('');
-      if (!rowText) continue;
-      if (/合计|总计|小计/.test(rowText) && !cellText(get('customer'))) continue;
-
-      const customer = cellText(get('customer')) || lastCustomer; // 合并单元格式留空 → 沿用上一行
-      if (cellText(get('customer'))) lastCustomer = cellText(get('customer'));
-      const amount = coerceMoney(get('amount'));
-      if (!customer && amount == null) continue;
-      if (!customer) { skipped.push({ row: i + 1, reason: '缺客户/单位' }); continue; }
-      if (amount == null || amount <= 0) { skipped.push({ row: i + 1, reason: '缺金额或金额无效' }); continue; }
-
-      lines.push({
-        customer,
-        biz: cellText(get('biz')) || null,
-        title: cellText(get('title')) || null,
-        amount: Math.round(amount * 100) / 100,
-        received: Math.max(0, Math.round((coerceMoney(get('received')) || 0) * 100) / 100),
-        entry_date: coerceDate(get('entry_date')),
-        due_date: coerceDate(get('due_date')),
-        note: cellText(get('note')) || null
-      });
-    }
-    sheets.push({ name, headers, map, lines, skipped });
+    sheets.push({ name, ...parsed });
   }
   return { sheets };
 }
