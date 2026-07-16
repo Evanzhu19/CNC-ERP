@@ -3,15 +3,20 @@
     <el-aside width="200px" class="aside">
       <div class="logo">CNC ERP</div>
       <el-menu :default-active="activeMenu" router background-color="#1f2d3d" text-color="#cfd6dd" active-text-color="#409eff">
-        <el-menu-item index="/"><el-icon><Odometer /></el-icon>看板</el-menu-item>
-        <el-menu-item index="/orders"><el-icon><Document /></el-icon>订单管理</el-menu-item>
-        <el-menu-item index="/pieces"><el-icon><Search /></el-icon>板件查询</el-menu-item>
-        <el-menu-item index="/outsourcing"><el-icon><Van /></el-icon>外发管理</el-menu-item>
-        <el-menu-item index="/shipments"><el-icon><Tickets /></el-icon>送货单</el-menu-item>
+        <!-- 财务账号只看财务板块（服务端同样强制，其他接口一律403） -->
+        <template v-if="!isFinance">
+          <el-menu-item index="/"><el-icon><Odometer /></el-icon>看板</el-menu-item>
+          <el-menu-item index="/orders"><el-icon><Document /></el-icon>订单管理</el-menu-item>
+          <el-menu-item index="/pieces"><el-icon><Search /></el-icon>板件查询</el-menu-item>
+          <el-menu-item index="/outsourcing"><el-icon><Van /></el-icon>外发管理</el-menu-item>
+          <el-menu-item index="/shipments"><el-icon><Tickets /></el-icon>送货单</el-menu-item>
+        </template>
         <el-menu-item v-if="canFinance" index="/receivables"><el-icon><Money /></el-icon>财务台账</el-menu-item>
         <el-menu-item index="/vehicles"><el-icon><AlarmClock /></el-icon>车辆提醒</el-menu-item>
-        <el-menu-item index="/basics"><el-icon><OfficeBuilding /></el-icon>客户与厂家</el-menu-item>
-        <el-menu-item v-if="['admin', 'procurement'].includes(user?.role)" index="/users"><el-icon><User /></el-icon>用户管理</el-menu-item>
+        <template v-if="!isFinance">
+          <el-menu-item index="/basics"><el-icon><OfficeBuilding /></el-icon>客户与厂家</el-menu-item>
+          <el-menu-item v-if="['admin', 'procurement'].includes(user?.role)" index="/users"><el-icon><User /></el-icon>用户管理</el-menu-item>
+        </template>
       </el-menu>
     </el-aside>
     <el-container>
@@ -59,6 +64,8 @@ const router = useRouter();
 const user = getUser();
 // 应收账款仅 财务(可操作) 和 总经理(只读) 可见，其余角色（含采购主管）完全不可见
 const canFinance = ['admin', 'finance'].includes(user?.role);
+// 财务账号只看财务板块
+const isFinance = user?.role === 'finance';
 const roleName = computed(() => ROLE_NAMES[user?.role] || user?.role);
 const activeMenu = computed(() => {
   if (route.path.startsWith('/orders')) return '/orders';

@@ -15,14 +15,24 @@ const PORT = Number(process.env.PORT || 3000);
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
+// 财务账号只在财务板块活动：除财务台账/车辆/自身账号操作外，一律403（服务端强制，不是只藏菜单）
+function financeScope(req, res, next) {
+  if (req.user?.role !== 'finance') return next();
+  const p = req.path;
+  if (p.startsWith('/finance') || p.startsWith('/vehicles') || p === '/me' || p === '/me/password' || p === '/logout') {
+    return next();
+  }
+  return res.status(403).json({ error: '财务账号只能访问财务板块' });
+}
+
 // 统一门户：ERP 挂在 /erp 前缀下（80端口网关反代过来带前缀）；
 // /api 双挂载保持兼容，:3000 直连和网关两条路都通
 for (const prefix of ['/api', '/erp/api']) {
   app.use(prefix, authRouter);
-  app.use(prefix, requireAuth, basicsRouter);
-  app.use(prefix, requireAuth, ordersRouter);
-  app.use(prefix, requireAuth, productionRouter);
-  app.use(prefix, requireAuth, financeRouter);
+  app.use(prefix, requireAuth, financeScope, basicsRouter);
+  app.use(prefix, requireAuth, financeScope, ordersRouter);
+  app.use(prefix, requireAuth, financeScope, productionRouter);
+  app.use(prefix, requireAuth, financeScope, financeRouter);
 }
 
 const distDir = path.join(__dirname, '..', 'web', 'dist');

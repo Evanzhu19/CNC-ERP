@@ -30,7 +30,13 @@ const router = createRouter({ history: createWebHistory(import.meta.env.BASE_URL
 router.beforeEach((to) => {
   const token = localStorage.getItem('token');
   if (!token && to.path !== '/login') return '/login';
-  if (token && to.path === '/login') return '/';
+  // 财务账号只在财务板块活动（服务端同样403强制）
+  let role = null;
+  try { role = JSON.parse(localStorage.getItem('user') || 'null')?.role; } catch {}
+  if (token && role === 'finance' && !['/receivables', '/vehicles', '/login'].includes(to.path)) {
+    return '/receivables';
+  }
+  if (token && to.path === '/login') return role === 'finance' ? '/receivables' : '/';
 });
 
 export default router;
