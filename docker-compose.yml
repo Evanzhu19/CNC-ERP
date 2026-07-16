@@ -16,6 +16,9 @@ services:
       - ./data:/app/data
     environment:
       - TZ=Asia/Shanghai
+      # 财务落盘加密密钥（64位hex，可选）：不设则自动生成 data/finance.key。
+      # 想让密钥与数据备份分离时在 .env 里设置（换机器必须带上同一把钥匙）。
+      - FINANCE_KEY=${FINANCE_KEY:-}
     restart: unless-stopped
     networks:
       - default

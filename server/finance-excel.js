@@ -63,12 +63,100 @@ const cellText = v => {
   return String(v).trim();
 };
 
+// ===== 矩阵账本模式：适配《采购统计表》《销售统计表》格式 =====
+// 每个单位两行：采购款/销售款(每月新增) + 付款/回收款(每月实付实收)，列=上年结转+一月..十二月
+const CN_MONTHS = ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'];
+const ACCRUAL_TYPES = ['采购款', '销售款', '货款'];
+const PAY_TYPES = ['付款', '回收款', '收款'];
+
+function monthOf(text) {
+  const t = String(text || '').replace(/\s/g, '');
+  const i = CN_MONTHS.indexOf(t);
+  if (i >= 0) return i + 1;
+  const m = t.match(/^(\d{1,2})月$/);
+  if (m) return Number(m[1]);
+  return null;
+}
+
+function tryParseMatrix(rows) {
+  // 找表头行：含"序号"且至少3个月份列
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(rows.length, 8); i++) {
+    const cells = (rows[i] || []).map(cellText);
+    if (cells.some(c => c === '序号') && cells.filter(c => monthOf(c)).length >= 3) { headerIdx = i; break; }
+  }
+  if (headerIdx < 0) return null;
+
+  const header = (rows[headerIdx] || []).map(cellText);
+  const monthCols = new Map(); // colIdx -> month(1-12)
+  header.forEach((h, c) => { const m = monthOf(h); if (m) monthCols.set(c, m); });
+  const carryCol = header.findIndex(h => h.includes('结转'));
+  let nameCol = header.findIndex(h => /客户|供应商|单位|名称/.test(h) && !/材料|业务/.test(h));
+  const bizCol = header.findIndex(h => /^材料$|业务/.test(h.replace(/\s/g, '')));
+  if (nameCol < 0) nameCol = (bizCol >= 0 ? bizCol + 1 : 1);
+
+  // 年份：标题里的 20xx，找不到用当前年
+  let year = new Date().getFullYear();
+  for (let i = 0; i <= headerIdx; i++) {
+    const m = (rows[i] || []).map(cellText).join(' ').match(/20\d{2}/);
+    if (m) { year = Number(m[0]); break; }
+  }
+
+  const entries = [];
+  const payments = [];
+  let entities = 0;
+  let current = null; // { name, biz }
+
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const row = rows[i] || [];
+    const cells = row.map(cellText);
+    if (!cells.join('')) continue;
+    // 类型格：采购款/销售款/付款/回收款 所在列不固定，逐行找
+    let type = null, typeCol = -1;
+    for (let c = 0; c < cells.length; c++) {
+      const t = cells[c].replace(/\s/g, '');
+      if (ACCRUAL_TYPES.includes(t) || PAY_TYPES.includes(t)) { type = t; typeCol = c; break; }
+    }
+    if (!type) continue;
+
+    const isAccrual = ACCRUAL_TYPES.includes(type);
+    if (isAccrual) {
+      const name = cellText(row[nameCol]) || (typeCol > 0 ? cellText(row[typeCol - 1]) : '');
+      if (!name) continue;
+      current = { name, biz: bizCol >= 0 ? (cellText(row[bizCol]) || null) : null };
+      entities++;
+      const carry = carryCol >= 0 ? coerceMoney(row[carryCol]) : null;
+      if (carry && carry > 0) {
+        entries.push({ customer: name, biz: current.biz, title: '上年结转', amount: Math.round(carry * 100) / 100, received: 0, entry_date: `${year}-01-01`, due_date: null, note: null });
+      }
+    }
+    if (!current) continue;
+    for (const [c, month] of monthCols) {
+      const v = coerceMoney(row[c]);
+      if (!v || v <= 0) continue;
+      const mm = String(month).padStart(2, '0');
+      if (isAccrual) {
+        entries.push({ customer: current.name, biz: current.biz, title: `${CN_MONTHS[month - 1]}${type}`, amount: Math.round(v * 100) / 100, received: 0, entry_date: `${year}-${mm}-01`, due_date: null, note: null });
+      } else {
+        payments.push({ customer: current.name, amount: Math.round(v * 100) / 100, pay_date: `${year}-${mm}-01` });
+      }
+    }
+  }
+  if (!entries.length && !payments.length) return null;
+  return { mode: 'matrix', year, entities, entries, payments };
+}
+
 export function parseFinanceExcel(buffer) {
   const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
   const sheets = [];
   for (const name of wb.SheetNames) {
     const ws = wb.Sheets[name];
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
+
+    // 先试矩阵账本模式（采购/销售统计表格式）
+    const matrix = tryParseMatrix(rows);
+    if (matrix) { sheets.push({ name, ...matrix, lines: matrix.entries, skipped: [] }); continue; }
+
     // 找表头：命中≥2个字段且含 customer 或 amount
     let headerIdx = -1, map = {};
     for (let i = 0; i < Math.min(rows.length, 15); i++) {

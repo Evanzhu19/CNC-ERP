@@ -248,6 +248,9 @@ db.exec('DROP TABLE IF EXISTS payments');
 
 // 财务台账扩展：应收/应付两本账 + 收付款流水（供按期间统计实收实付）
 try { db.exec(`ALTER TABLE finance_entries ADD COLUMN kind TEXT NOT NULL DEFAULT 'receivable'`); } catch { /* 列已存在 */ }
+// 财务数据落盘加密：敏感字段整体加密进 enc 列（迁移在 routes-finance.js 启动时做）
+try { db.exec('ALTER TABLE finance_entries ADD COLUMN enc TEXT'); } catch { /* 列已存在 */ }
+try { db.exec('ALTER TABLE finance_payments ADD COLUMN enc TEXT'); } catch { /* 列已存在 */ }
 db.exec(`
 CREATE TABLE IF NOT EXISTS finance_payments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

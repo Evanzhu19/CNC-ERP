@@ -210,6 +210,8 @@
     <template v-if="curSheet">
       <el-alert v-if="curSheet.error" type="error" :closable="false" :title="curSheet.error" />
       <template v-else>
+        <el-alert v-if="curSheet.mode === 'matrix'" type="success" :closable="false" style="margin-bottom: 10px"
+          :title="`识别为「单位×月份」统计表：${curSheet.year}年，${curSheet.entities} 家单位，${curSheet.lines.length} 条新增记录，另有 ${curSheet.payments?.length || 0} 笔收付款将按先进先出自动冲账（结转和旧账先冲）。`" />
         <el-table :data="curSheet.lines" size="small" border max-height="420" @selection-change="s => impSel = s" ref="impTable">
           <el-table-column type="selection" width="40" />
           <el-table-column label="客户/单位" prop="customer" min-width="130" show-overflow-tooltip />
@@ -248,7 +250,8 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, getUser } from '../api.js';
+import { getUser } from '../api.js';
+import { finCall, finUpload } from '../finance-api.js';
 
 // 只有财务能操作；总经理只读（服务端同样强制）
 const canEdit = getUser()?.role === 'finance';
@@ -268,8 +271,7 @@ const granularity = ref('month');
 async function loadSummary() {
   sumLoading.value = true;
   try {
-    const { data } = await api.get('/finance/summary', { params: { granularity: granularity.value } });
-    summary.value = data;
+    summary.value = await finCall('get', '/finance/summary', { params: { granularity: granularity.value } });
   } finally { sumLoading.value = false; }
 }
 
@@ -303,7 +305,7 @@ function rowClass({ row }) {
 async function load() {
   loading.value = true;
   try {
-    const { data } = await api.get('/finance/entries', { params: { kind: tab.value } });
+    const data = await finCall('get', '/finance/entries', { params: { kind: tab.value } });
     rows.value = data.entries;
     totals.value = data.totals;
   } finally { loading.value = false; }
@@ -323,8 +325,8 @@ async function save() {
   if (!f.customer?.trim()) return ElMessage.warning(`请填写${L.value.who}`);
   if (!(f.amount > 0)) return ElMessage.warning('请填写金额');
   if (!f.entry_date) return ElMessage.warning('请选择记账日期');
-  if (f.id) await api.put(`/finance/entries/${f.id}`, { ...f, kind: tab.value });
-  else await api.post('/finance/entries', { ...f, kind: tab.value });
+  if (f.id) await finCall('put', `/finance/entries/${f.id}`, { data: { ...f, kind: tab.value } });
+  else await finCall('post', '/finance/entries', { data: { ...f, kind: tab.value } });
   ElMessage.success('已保存');
   formDialog.value = false;
   load();
@@ -336,19 +338,19 @@ async function receive(row) {
     `登记${L.value.act}`,
     { inputValue: String(row.balance), inputPattern: /^\d+(\.\d{1,2})?$/, inputErrorMessage: '请输入金额', confirmButtonText: '登记' }
   );
-  await api.post(`/finance/entries/${row.id}/receive`, { amount: Number(value) });
+  await finCall('post', `/finance/entries/${row.id}/receive`, { data: { amount: Number(value) } });
   ElMessage.success(`${L.value.act}已登记`);
   load();
 }
 
 async function toggleRemind(row) {
-  await api.post(`/finance/entries/${row.id}/remind`);
+  await finCall('post', `/finance/entries/${row.id}/remind`);
   load();
 }
 
 async function del(row) {
   await ElMessageBox.confirm(`删除「${row.customer}」这笔 ${money(row.amount)} 的${L.value.name}记录？`, '确认删除', { type: 'warning' });
-  await api.delete(`/finance/entries/${row.id}`);
+  await finCall('delete', `/finance/entries/${row.id}`);
   ElMessage.success('已删除');
   load();
 }
@@ -376,9 +378,7 @@ async function onXlsPicked(e) {
   e.target.value = '';
   if (!f) return;
   xlsName.value = f.name;
-  const fd = new FormData();
-  fd.append('file', f);
-  const { data } = await api.post(`/finance/parse-excel?kind=${tab.value}`, fd);
+  const data = await finUpload('/finance/parse-excel', f, { kind: tab.value });
   impSheets.value = data.sheets;
   impSheetIdx.value = Math.max(0, data.sheets.findIndex(s => !s.error && s.lines.length));
   await nextTick();
@@ -399,8 +399,12 @@ function preselect() {
 async function doImport() {
   importing.value = true;
   try {
-    const { data } = await api.post('/finance/import', { kind: tab.value, entries: impSel.value });
-    ElMessage.success(`已导入 ${data.imported} 条`);
+    const payments = curSheet.value?.mode === 'matrix' ? (curSheet.value.payments || []) : [];
+    const data = await finCall('post', '/finance/import', { data: { kind: tab.value, entries: impSel.value, payments } });
+    let msg = `已导入 ${data.imported} 条`;
+    if (data.payments_allocated) msg += `，${data.payments_allocated} 笔收付款已自动冲账`;
+    if (data.unmatched?.length) msg += `；${data.unmatched.length} 笔收付款没找到对应单位未入账`;
+    ElMessage({ message: msg, type: data.unmatched?.length ? 'warning' : 'success', duration: 6000 });
     importDialog.value = false;
     load();
   } finally { importing.value = false; }

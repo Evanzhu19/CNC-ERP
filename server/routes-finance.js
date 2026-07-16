@@ -2,19 +2,66 @@ import { Router } from 'express';
 import multer from 'multer';
 import { db, today } from './db.js';
 import { requireRole, BASICS_ROLES } from './auth.js';
-import { parseFinanceExcel, FIN_FIELD_NAMES } from './finance-excel.js';
+import { parseFinanceExcel } from './finance-excel.js';
+import { encRecord, decRecord, handshake, getSession, encPayload, decPayload, decPayloadBytes } from './finance-crypto.js';
 
 export const financeRouter = Router();
 
 // 财务台账：独立手工账（应收+应付两本，含模具钢材等CNC之外的业务），与订单/出货数据完全无关
 // 权限锁死：财务=看+操作；总经理=只读；其余角色（含采购主管）一律不可见不可操作。
-// 所有校验都在服务端逐接口强制，前端只是隐藏入口。
+// 数据安全：敏感字段落盘加密（enc列）；/finance/* 传输全报文加密（x25519会话密钥）。
 const FIN_VIEW = ['admin', 'finance'];
 const FIN_EDIT = ['finance'];
 
 const KINDS = ['receivable', 'payable'];
 const round2 = v => Math.round(Number(v || 0) * 100) / 100;
 const normKind = k => (KINDS.includes(k) ? k : 'receivable');
+const normName = s => String(s || '').replace(/\s/g, '');
+
+// ===== 启动迁移：历史明文行 → 加密 =====
+(function migrateLegacy() {
+  const legacyE = db.prepare(`SELECT * FROM finance_entries WHERE enc IS NULL`).all();
+  const legacyP = db.prepare(`SELECT * FROM finance_payments WHERE enc IS NULL`).all();
+  if (!legacyE.length && !legacyP.length) return;
+  db.exec('BEGIN');
+  try {
+    const upE = db.prepare(`UPDATE finance_entries SET enc = ?, customer = '*', biz = NULL, title = NULL, amount = 0, received = 0, entry_date = '', due_date = NULL, note = NULL WHERE id = ?`);
+    for (const r of legacyE) {
+      upE.run(encRecord({ customer: r.customer, biz: r.biz, title: r.title, amount: r.amount, received: r.received, entry_date: r.entry_date, due_date: r.due_date, note: r.note }), r.id);
+    }
+    const upP = db.prepare(`UPDATE finance_payments SET enc = ?, amount = 0, pay_date = '' WHERE id = ?`);
+    for (const r of legacyP) {
+      upP.run(encRecord({ amount: r.amount, pay_date: r.pay_date }), r.id);
+    }
+    db.exec('COMMIT');
+    console.log(`[财务加密] 已加密历史数据：台账 ${legacyE.length} 条、流水 ${legacyP.length} 条`);
+  } catch (e) {
+    db.exec('ROLLBACK');
+    console.error('[财务加密] 历史数据迁移失败:', e.message);
+  }
+})();
+
+// ===== 解密读取 =====
+function readEntries(kind) {
+  const rows = db.prepare(`
+    SELECT f.id, f.kind, f.remind, f.enc, u.name AS created_by_name
+    FROM finance_entries f LEFT JOIN users u ON u.id = f.created_by
+    WHERE f.kind = ?
+  `).all(kind);
+  return rows.map(r => {
+    const d = decRecord(r.enc);
+    return {
+      id: r.id, kind: r.kind, remind: r.remind, created_by_name: r.created_by_name,
+      ...d, amount: round2(d.amount), received: round2(d.received),
+      balance: round2(d.amount - d.received)
+    };
+  }).sort((a, b) => (b.remind - a.remind) || String(b.entry_date).localeCompare(String(a.entry_date)) || (b.id - a.id));
+}
+
+function readPayments() {
+  return db.prepare('SELECT id, kind, enc FROM finance_payments').all()
+    .map(r => ({ kind: r.kind, ...decRecord(r.enc) }));
+}
 
 function entryTotals(entries) {
   const owed = entries.filter(e => e.balance > 0.005);
@@ -28,77 +75,108 @@ function entryTotals(entries) {
   };
 }
 
-financeRouter.get('/finance/entries', requireRole(...FIN_VIEW), (req, res) => {
-  const kind = normKind(req.query.kind);
-  const rows = db.prepare(`
-    SELECT f.*, u.name AS created_by_name
-    FROM finance_entries f LEFT JOIN users u ON u.id = f.created_by
-    WHERE f.kind = ?
-    ORDER BY f.remind DESC, f.entry_date DESC, f.id DESC
-  `).all(kind);
-  const entries = rows.map(r => ({
-    ...r,
-    amount: round2(r.amount),
-    received: round2(r.received),
-    balance: round2(r.amount - r.received)
-  }));
-  res.json({ entries, totals: entryTotals(entries) });
+function writeEntry(id, d, remind) {
+  db.prepare('UPDATE finance_entries SET enc = ?, remind = ? WHERE id = ?')
+    .run(encRecord({ customer: d.customer, biz: d.biz, title: d.title, amount: d.amount, received: d.received, entry_date: d.entry_date, due_date: d.due_date, note: d.note }), remind ? 1 : 0, id);
+}
+
+function insertEntry(kind, d, remind, userId) {
+  const r = db.prepare(`
+    INSERT INTO finance_entries (kind, customer, biz, title, amount, received, entry_date, due_date, remind, note, created_by, enc)
+    VALUES (?, '*', NULL, NULL, 0, 0, '', NULL, ?, NULL, ?, ?)
+  `).run(kind, remind ? 1 : 0, userId,
+    encRecord({ customer: d.customer, biz: d.biz, title: d.title, amount: d.amount, received: d.received, entry_date: d.entry_date, due_date: d.due_date, note: d.note }));
+  return Number(r.lastInsertRowid);
+}
+
+function insertPayment(entryId, kind, amount, payDate, userId) {
+  db.prepare(`INSERT INTO finance_payments (entry_id, kind, amount, pay_date, created_by, enc) VALUES (?, ?, 0, '', ?, ?)`)
+    .run(entryId, kind, userId, encRecord({ amount, pay_date: payDate }));
+}
+
+// ===== 传输加密通道 =====
+// 握手（本身不加密，只交换公钥）
+financeRouter.post('/finance/handshake', requireRole(...FIN_VIEW), (req, res) => {
+  try {
+    res.json({ pub: handshake(req.token, req.body?.pub) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
-// 总账：当前余额 + 按业务类型小计 + 按月/季/年盈亏（收入=新增应收，支出=新增应付）
+// 其余 /finance/* 一律走加密信封：请求体 {x} 解密，响应用 res.finSend 加密
+financeRouter.use('/finance', (req, res, next) => {
+  const s = getSession(req.token);
+  if (!s) return res.status(428).json({ error: '加密通道未建立' });
+  req.finKey = s.key;
+  if (req.body && typeof req.body.x === 'string') {
+    try { req.body = decPayload(s.key, req.body.x); }
+    catch { return res.status(400).json({ error: '请求解密失败，请刷新页面' }); }
+  }
+  res.finSend = obj => res.json({ x: encPayload(s.key, obj) });
+  next();
+});
+
+// ===== 台账 =====
+financeRouter.get('/finance/entries', requireRole(...FIN_VIEW), (req, res) => {
+  const entries = readEntries(normKind(req.query.kind));
+  res.finSend({ entries, totals: entryTotals(entries) });
+});
+
+// 总账：当前余额 + 按业务类型小计 + 按月/季/年盈亏
 financeRouter.get('/finance/summary', requireRole(...FIN_VIEW), (req, res) => {
   const g = ['month', 'quarter', 'year'].includes(req.query.granularity) ? req.query.granularity : 'month';
-  const periodExpr = col => ({
-    month: `substr(${col}, 1, 7)`,
-    quarter: `substr(${col}, 1, 4) || 'Q' || CAST((CAST(substr(${col}, 6, 2) AS INTEGER) + 2) / 3 AS INTEGER)`,
-    year: `substr(${col}, 1, 4)`
-  }[g]);
+  const periodOf = d => {
+    if (!d) return null;
+    if (g === 'month') return d.slice(0, 7);
+    if (g === 'year') return d.slice(0, 4);
+    return `${d.slice(0, 4)}Q${Math.ceil(Number(d.slice(5, 7)) / 3)}`;
+  };
 
-  const balances = {};
-  for (const kind of KINDS) {
-    const rows = db.prepare('SELECT amount, received, remind FROM finance_entries WHERE kind = ?').all(kind)
-      .map(r => ({ ...r, balance: r.amount - r.received }));
-    balances[kind] = entryTotals(rows.map(r => ({ ...r, amount: round2(r.amount), received: round2(r.received), balance: round2(r.balance) })));
-  }
+  const all = { receivable: readEntries('receivable'), payable: readEntries('payable') };
+  const balances = {
+    receivable: entryTotals(all.receivable),
+    payable: entryTotals(all.payable)
+  };
   balances.net = round2(balances.receivable.balance - balances.payable.balance);
 
   const byBiz = {};
   for (const kind of KINDS) {
-    byBiz[kind] = db.prepare(`
-      SELECT COALESCE(NULLIF(TRIM(biz), ''), '未分类') AS biz,
-        SUM(amount) AS amount, SUM(received) AS received, SUM(amount - received) AS balance, COUNT(*) AS cnt
-      FROM finance_entries WHERE kind = ? GROUP BY 1 ORDER BY balance DESC
-    `).all(kind).map(r => ({ ...r, amount: round2(r.amount), received: round2(r.received), balance: round2(r.balance) }));
+    const m = new Map();
+    for (const e of all[kind]) {
+      const biz = (e.biz || '').trim() || '未分类';
+      const o = m.get(biz) || { biz, amount: 0, received: 0, balance: 0, cnt: 0 };
+      o.amount += e.amount; o.received += e.received; o.balance += e.balance; o.cnt++;
+      m.set(biz, o);
+    }
+    byBiz[kind] = [...m.values()].map(o => ({ ...o, amount: round2(o.amount), received: round2(o.received), balance: round2(o.balance) }))
+      .sort((a, b) => b.balance - a.balance);
   }
-
-  // 记账口径盈亏
-  const booked = db.prepare(`
-    SELECT ${periodExpr('entry_date')} AS period, kind, SUM(amount) AS total
-    FROM finance_entries GROUP BY period, kind
-  `).all();
-  // 现金口径（收付款流水，历史导入的已收按记账日期入流水）
-  const cash = db.prepare(`
-    SELECT ${periodExpr('pay_date')} AS period, kind, SUM(amount) AS total
-    FROM finance_payments GROUP BY period, kind
-  `).all();
 
   const periodMap = new Map();
   const P = p => { if (!periodMap.has(p)) periodMap.set(p, { period: p, income: 0, expense: 0, profit: 0, cash_in: 0, cash_out: 0, net_cash: 0 }); return periodMap.get(p); };
-  for (const r of booked) {
-    const o = P(r.period);
-    if (r.kind === 'receivable') o.income = round2(r.total); else o.expense = round2(r.total);
+  for (const kind of KINDS) {
+    for (const e of all[kind]) {
+      const p = periodOf(e.entry_date);
+      if (!p) continue;
+      const o = P(p);
+      if (kind === 'receivable') o.income += e.amount; else o.expense += e.amount;
+    }
   }
-  for (const r of cash) {
-    const o = P(r.period);
-    if (r.kind === 'receivable') o.cash_in = round2(r.total); else o.cash_out = round2(r.total);
+  for (const pm of readPayments()) {
+    const p = periodOf(pm.pay_date);
+    if (!p) continue;
+    const o = P(p);
+    if (pm.kind === 'receivable') o.cash_in += pm.amount; else o.cash_out += pm.amount;
   }
   let periods = [...periodMap.values()].map(o => ({
-    ...o, profit: round2(o.income - o.expense), net_cash: round2(o.cash_in - o.cash_out)
+    period: o.period,
+    income: round2(o.income), expense: round2(o.expense), profit: round2(o.income - o.expense),
+    cash_in: round2(o.cash_in), cash_out: round2(o.cash_out), net_cash: round2(o.cash_in - o.cash_out)
   })).sort((a, b) => b.period.localeCompare(a.period));
-  const limit = g === 'month' ? 12 : g === 'quarter' ? 8 : 20;
-  periods = periods.slice(0, limit);
+  periods = periods.slice(0, g === 'month' ? 12 : g === 'quarter' ? 8 : 20);
 
-  res.json({ balances, by_biz: byBiz, periods, granularity: g });
+  res.finSend({ balances, by_biz: byBiz, periods, granularity: g });
 });
 
 function validEntry(body) {
@@ -110,25 +188,23 @@ function validEntry(body) {
   return null;
 }
 
+const cleanEntry = b => ({
+  customer: String(b.customer).trim(), biz: b.biz || null, title: b.title || null,
+  amount: round2(b.amount), received: round2(b.received || 0),
+  entry_date: b.entry_date, due_date: b.due_date || null, note: b.note || null
+});
+
 financeRouter.post('/finance/entries', requireRole(...FIN_EDIT), (req, res) => {
   const err = validEntry(req.body);
   if (err) return res.status(400).json({ error: err });
-  const b = req.body;
-  const kind = normKind(b.kind);
+  const d = cleanEntry(req.body);
+  const kind = normKind(req.body.kind);
   db.exec('BEGIN');
   try {
-    const r = db.prepare(`
-      INSERT INTO finance_entries (kind, customer, biz, title, amount, received, entry_date, due_date, remind, note, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(kind, String(b.customer).trim(), b.biz || null, b.title || null, Number(b.amount),
-      Number(b.received || 0), b.entry_date, b.due_date || null, b.remind ? 1 : 0, b.note || null, req.user.id);
-    const id = Number(r.lastInsertRowid);
-    if (Number(b.received || 0) > 0) {
-      db.prepare('INSERT INTO finance_payments (entry_id, kind, amount, pay_date, created_by) VALUES (?, ?, ?, ?, ?)')
-        .run(id, kind, Number(b.received), b.entry_date, req.user.id);
-    }
+    const id = insertEntry(kind, d, req.body.remind, req.user.id);
+    if (d.received > 0) insertPayment(id, kind, d.received, d.entry_date, req.user.id);
     db.exec('COMMIT');
-    res.json({ id });
+    res.finSend({ id });
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 });
 
@@ -137,13 +213,8 @@ financeRouter.put('/finance/entries/:id', requireRole(...FIN_EDIT), (req, res) =
   if (!row) return res.status(404).json({ error: '记录不存在' });
   const err = validEntry(req.body);
   if (err) return res.status(400).json({ error: err });
-  const b = req.body;
-  db.prepare(`
-    UPDATE finance_entries SET customer = ?, biz = ?, title = ?, amount = ?, received = ?,
-      entry_date = ?, due_date = ?, remind = ?, note = ? WHERE id = ?
-  `).run(String(b.customer).trim(), b.biz || null, b.title || null, Number(b.amount),
-    Number(b.received || 0), b.entry_date, b.due_date || null, b.remind ? 1 : 0, b.note || null, row.id);
-  res.json({ ok: true });
+  writeEntry(row.id, cleanEntry(req.body), req.body.remind);
+  res.finSend({ ok: true });
 });
 
 // 快捷操作：登记收款/付款（累加+记流水）/ 切换催款（待付）标记
@@ -153,16 +224,16 @@ financeRouter.post('/finance/entries/:id/receive', requireRole(...FIN_EDIT), (re
   const amt = Number(req.body?.amount);
   if (!(amt > 0)) return res.status(400).json({ error: '金额必须大于0' });
   const payDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body?.pay_date || '')) ? req.body.pay_date : today();
-  const newReceived = round2(row.received + amt);
-  const remind = newReceived >= row.amount - 0.005 ? 0 : row.remind;
+  const d = decRecord(row.enc);
+  d.received = round2(d.received + amt);
+  const remind = d.received >= d.amount - 0.005 ? 0 : row.remind;
   db.exec('BEGIN');
   try {
-    db.prepare('UPDATE finance_entries SET received = ?, remind = ? WHERE id = ?').run(newReceived, remind, row.id);
-    db.prepare('INSERT INTO finance_payments (entry_id, kind, amount, pay_date, created_by) VALUES (?, ?, ?, ?, ?)')
-      .run(row.id, row.kind, amt, payDate, req.user.id);
+    writeEntry(row.id, d, remind);
+    insertPayment(row.id, row.kind, amt, payDate, req.user.id);
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
-  res.json({ ok: true, received: newReceived });
+  res.finSend({ ok: true, received: d.received });
 });
 
 financeRouter.post('/finance/entries/:id/remind', requireRole(...FIN_EDIT), (req, res) => {
@@ -170,7 +241,7 @@ financeRouter.post('/finance/entries/:id/remind', requireRole(...FIN_EDIT), (req
   if (!row) return res.status(404).json({ error: '记录不存在' });
   const next = row.remind ? 0 : 1;
   db.prepare('UPDATE finance_entries SET remind = ? WHERE id = ?').run(next, row.id);
-  res.json({ ok: true, remind: next });
+  res.finSend({ ok: true, remind: next });
 });
 
 financeRouter.delete('/finance/entries/:id', requireRole(...FIN_EDIT), (req, res) => {
@@ -180,30 +251,25 @@ financeRouter.delete('/finance/entries/:id', requireRole(...FIN_EDIT), (req, res
     db.prepare('DELETE FROM finance_entries WHERE id = ?').run(req.params.id);
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
-  res.json({ ok: true });
+  res.finSend({ ok: true });
 });
 
-// ===== Excel 导入：解析预览 + 批量入账 =====
-const xlsUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+// ===== Excel 导入：解析预览 + 批量入账（含矩阵账本先进先出冲账） =====
+const xlsUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
 
 financeRouter.post('/finance/parse-excel', requireRole(...FIN_EDIT), xlsUpload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: '请选择Excel文件' });
   try {
-    const { sheets } = parseFinanceExcel(req.file.buffer);
-    // 查重：同单位+同金额+同记账日期 已存在 → 标记疑似重复
-    const dupStmt = db.prepare(`
-      SELECT COUNT(*) AS n FROM finance_entries
-      WHERE kind = ? AND replace(customer, ' ', '') = ? AND ABS(amount - ?) < 0.005 AND entry_date = ?
-    `);
+    const buf = decPayloadBytes(req.finKey, req.file.buffer); // 上传的文件也是加密的
+    const { sheets } = parseFinanceExcel(buf);
     const kind = normKind(req.query.kind);
+    const existing = new Set(readEntries(kind).map(e => `${normName(e.customer)}|${e.amount.toFixed(2)}|${e.entry_date}`));
     for (const sheet of sheets) {
       for (const l of sheet.lines || []) {
-        l.duplicate = l.entry_date
-          ? dupStmt.get(kind, l.customer.replace(/\s/g, ''), l.amount, l.entry_date).n > 0
-          : false;
+        l.duplicate = l.entry_date ? existing.has(`${normName(l.customer)}|${round2(l.amount).toFixed(2)}|${l.entry_date}`) : false;
       }
     }
-    res.json({ sheets, field_names: FIN_FIELD_NAMES });
+    res.finSend({ sheets });
   } catch (e) {
     console.error('财务Excel解析失败:', e);
     res.status(422).json({ error: 'Excel解析失败：' + e.message });
@@ -211,32 +277,76 @@ financeRouter.post('/finance/parse-excel', requireRole(...FIN_EDIT), xlsUpload.s
 });
 
 financeRouter.post('/finance/import', requireRole(...FIN_EDIT), (req, res) => {
-  const { entries, kind: rawKind } = req.body || {};
+  const { entries, payments, kind: rawKind } = req.body || {};
   if (!Array.isArray(entries) || !entries.length) return res.status(400).json({ error: '没有要导入的记录' });
-  if (entries.length > 1000) return res.status(400).json({ error: '一次最多导入1000条' });
+  if (entries.length > 2000) return res.status(400).json({ error: '一次最多导入2000条' });
   const kind = normKind(rawKind);
   const errs = [];
   entries.forEach((e, i) => { const err = validEntry({ ...e, entry_date: e.entry_date || today() }); if (err) errs.push(`第${i + 1}条: ${err}`); });
   if (errs.length) return res.status(400).json({ error: errs.slice(0, 5).join('；') });
 
+  // 现有未结清记录（供收付款冲账时衔接旧账）
+  const existingOpen = readEntries(kind).filter(e => e.balance > 0.005);
+
   db.exec('BEGIN');
   try {
-    const ins = db.prepare(`
-      INSERT INTO finance_entries (kind, customer, biz, title, amount, received, entry_date, due_date, remind, note, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-    `);
-    const insPay = db.prepare('INSERT INTO finance_payments (entry_id, kind, amount, pay_date, created_by) VALUES (?, ?, ?, ?, ?)');
-    let count = 0;
+    const batch = []; // {id, d(解密态), remind}
     for (const e of entries) {
-      const entryDate = e.entry_date || today();
-      const received = Math.min(Number(e.received || 0), Number(e.amount));
-      const r = ins.run(kind, String(e.customer).trim(), e.biz || null, e.title || null, Number(e.amount),
-        received, entryDate, e.due_date || null, e.note || null, req.user.id);
-      if (received > 0) insPay.run(Number(r.lastInsertRowid), kind, received, entryDate, req.user.id);
-      count++;
+      const d = cleanEntry({ ...e, entry_date: e.entry_date || today() });
+      d.received = Math.min(d.received, d.amount);
+      const id = insertEntry(kind, d, 0, req.user.id);
+      if (d.received > 0) insertPayment(id, kind, d.received, d.entry_date, req.user.id);
+      batch.push({ id, d, remind: 0 });
+    }
+
+    // 矩阵账本的收付款：按单位先进先出冲账（旧账优先，再冲本批）
+    let allocated = 0;
+    const unmatched = [];
+    const touched = new Map(); // id -> {d, remind, isExisting}
+    if (Array.isArray(payments) && payments.length) {
+      const candidatesOf = name => {
+        const n = normName(name);
+        const ex = existingOpen.filter(e => normName(e.customer) === n)
+          .map(e => ({ id: e.id, d: e, remind: e.remind, isExisting: true }));
+        const nb = batch.filter(b => normName(b.d.customer) === n)
+          .map(b => ({ id: b.id, d: b.d, remind: 0, isExisting: false }));
+        return [...ex, ...nb].sort((a, b) => String(a.d.entry_date).localeCompare(String(b.d.entry_date)));
+      };
+      const candCache = new Map();
+      for (const p of payments) {
+        const amt = round2(p.amount);
+        if (!(amt > 0)) continue;
+        const payDate = /^\d{4}-\d{2}-\d{2}$/.test(String(p.pay_date || '')) ? p.pay_date : today();
+        const n = normName(p.customer);
+        if (!candCache.has(n)) candCache.set(n, candidatesOf(p.customer));
+        const cands = candCache.get(n);
+        if (!cands.length) { unmatched.push({ customer: p.customer, amount: amt, pay_date: payDate }); continue; }
+        let remaining = amt;
+        for (const c of cands) {
+          if (remaining <= 0.005) break;
+          const room = round2(c.d.amount - c.d.received);
+          if (room <= 0.005) continue;
+          const take = Math.min(room, remaining);
+          c.d.received = round2(c.d.received + take);
+          remaining = round2(remaining - take);
+          insertPayment(c.id, kind, take, payDate, req.user.id);
+          touched.set(c.id, c);
+        }
+        if (remaining > 0.005) { // 多付/预收：挂到该单位最后一条上
+          const last = cands[cands.length - 1];
+          last.d.received = round2(last.d.received + remaining);
+          insertPayment(last.id, kind, remaining, payDate, req.user.id);
+          touched.set(last.id, last);
+        }
+        allocated++;
+      }
+      for (const c of touched.values()) {
+        const remind = c.d.received >= c.d.amount - 0.005 ? 0 : c.remind;
+        writeEntry(c.id, c.d, remind);
+      }
     }
     db.exec('COMMIT');
-    res.json({ imported: count });
+    res.finSend({ imported: batch.length, payments_allocated: allocated, unmatched });
   } catch (e) {
     db.exec('ROLLBACK');
     console.error('财务导入失败:', e);
