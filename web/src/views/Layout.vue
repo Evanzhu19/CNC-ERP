@@ -52,16 +52,19 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { Odometer, Document, Van, OfficeBuilding, User, ArrowDown, Search, Tickets, Money, AlarmClock } from '@element-plus/icons-vue';
-import { api, getUser } from '../api.js';
+import { api, getUser, syncIdentity } from '../api.js';
 import { ROLE_NAMES } from '../consts.js';
 
 const route = useRoute();
 const router = useRouter();
 const user = getUser();
+
+// 进系统先跟服务器核对身份：角色变了就重载，让菜单/权限立刻对上
+syncIdentity().then(changed => { if (changed) location.reload(); });
 // 应收账款仅 财务(可操作) 和 总经理(只读) 可见，其余角色（含采购主管）完全不可见
 const canFinance = ['admin', 'finance'].includes(user?.role);
 // 财务账号只看财务板块

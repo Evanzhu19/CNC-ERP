@@ -7,6 +7,7 @@ import { db, UPLOAD_DIR, today, verifyPassword, lastActExpr } from './db.js';
 import { requireRole, canSeePrice, ENTRY_ROLES } from './auth.js';
 import { parsePurchaseOrderPdf } from './pdf-parse.js';
 import { parseOrdersExcel } from './excel-parse.js';
+import { str, posInt, money, dateStr, exists, LIMITS } from './validate.js';
 
 export const ordersRouter = Router();
 
@@ -39,38 +40,56 @@ function createPieces(orderId, orderNo, itemId, qty) {
 
 function validItems(items) {
   if (!Array.isArray(items) || items.length === 0) return '订单至少要有一行明细';
+  if (items.length > LIMITS.items) return `一张订单最多 ${LIMITS.items} 行明细（当前 ${items.length} 行），请拆单`;
   for (const it of items) {
+    if (!it || typeof it !== 'object' || Array.isArray(it)) return '明细行格式不对';
     const qty = Number(it.qty);
     if (!Number.isInteger(qty) || qty <= 0) return '明细行数量必须是正整数';
-    if (qty > 500) return '单行数量过大，请检查';
-    if (it.unit_price != null && it.unit_price !== '' && !(Number(it.unit_price) >= 0)) return '单价格式不对';
+    if (qty > LIMITS.qty) return `单行数量不能超过 ${LIMITS.qty}，请检查是否多打了零`;
+    if (it.unit_price != null && it.unit_price !== '' && money(it.unit_price) == null) return '单价格式不对（须为0~100亿之间的数字）';
   }
   return null;
 }
 
+// 明细行字段统一净化：类型/长度封顶，防脏数据进库
+function cleanItem(it) {
+  return {
+    part_no: str(it.part_no, LIMITS.code),
+    drawing_no: str(it.drawing_no, LIMITS.code),
+    name: str(it.name, LIMITS.name),
+    spec: str(it.spec, LIMITS.spec),
+    material: str(it.material, LIMITS.name),
+    qty: Number(it.qty),
+    remark: str(it.remark, LIMITS.note)
+  };
+}
+
 ordersRouter.post('/orders', requireRole(...ENTRY_ROLES), (req, res) => {
   const { customer_id, customer_po, order_date, due_date, remark, items } = req.body || {};
-  if (!customer_id) return res.status(400).json({ error: '请选择客户' });
+  if (!exists(db, 'customers', customer_id)) return res.status(400).json({ error: '请选择有效的客户' });
   const err = validItems(items);
   if (err) return res.status(400).json({ error: err });
-  const odate = order_date || today();
+  if (order_date && !dateStr(order_date)) return res.status(400).json({ error: '下单日期格式不对' });
+  if (due_date && !dateStr(due_date)) return res.status(400).json({ error: '交期格式不对' });
+  const odate = dateStr(order_date) || today();
   db.exec('BEGIN');
   try {
     const orderNo = nextOrderNo(odate);
     const r = db.prepare(
       `INSERT INTO orders (order_no, customer_id, customer_po, order_date, due_date, remark, created_by)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(orderNo, customer_id, customer_po || null, odate, due_date || null, remark || null, req.user.id);
+    ).run(orderNo, Number(customer_id), str(customer_po, LIMITS.code), odate, dateStr(due_date), str(remark, LIMITS.note), req.user.id);
     const orderId = Number(r.lastInsertRowid);
     const insItem = db.prepare(
       `INSERT INTO order_items (order_id, line_no, part_no, drawing_no, name, spec, material, qty, unit_price, remark)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
-    items.forEach((it, idx) => {
-      const price = canSeePrice(req) && it.unit_price !== '' && it.unit_price != null ? Number(it.unit_price) : null;
-      const ri = insItem.run(orderId, idx + 1, it.part_no || null, it.drawing_no || null, it.name || null,
-        it.spec || null, it.material || null, Number(it.qty), price, it.remark || null);
-      createPieces(orderId, orderNo, Number(ri.lastInsertRowid), Number(it.qty));
+    items.forEach((raw, idx) => {
+      const it = cleanItem(raw);
+      const price = canSeePrice(req) && raw.unit_price !== '' && raw.unit_price != null ? money(raw.unit_price) : null;
+      const ri = insItem.run(orderId, idx + 1, it.part_no, it.drawing_no, it.name,
+        it.spec, it.material, it.qty, price, it.remark);
+      createPieces(orderId, orderNo, Number(ri.lastInsertRowid), it.qty);
     });
     db.exec('COMMIT');
     res.json({ id: orderId, order_no: orderNo });

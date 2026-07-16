@@ -30,6 +30,23 @@ export function getUser() {
   try { return JSON.parse(localStorage.getItem('user')); } catch { return null; }
 }
 
+// 用服务器的真实身份校准本地缓存：
+// ①管理员改了某人角色，那人刷新页面即生效（不必重新登录）
+// ②本地 user 被手改（改角色骗菜单）会立刻被纠正
+// 返回 true 表示身份有变、调用方应重载页面。（后端权限本来就以数据库为准，这里只是让界面别骗人）
+export async function syncIdentity() {
+  try {
+    const { data } = await api.get('/me');
+    const server = data.user;
+    if (!server) return false;
+    const local = getUser();
+    localStorage.setItem('user', JSON.stringify(server));
+    return !local || local.role !== server.role || local.id !== server.id;
+  } catch {
+    return false; // 网络问题不打扰用户，401 由拦截器处理
+  }
+}
+
 export function canSeePrice() {
   const u = getUser();
   return !!u && ['admin', 'procurement', 'finance', 'cnc_manager'].includes(u.role);

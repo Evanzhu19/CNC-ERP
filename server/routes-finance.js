@@ -48,10 +48,10 @@ function readTxnsOf(kind) {
     .map(r => ({ id: r.id, account_id: r.account_id, created_by_name: r.created_by_name, ...decRecord(r.enc) }));
 }
 
-// 账户 + 汇总数
-function readAccounts(kind) {
+// 账户 + 汇总数（txns 可传入复用，避免同一请求内重复解密）
+function readAccounts(kind, txns = null) {
   const accounts = readAccountsRaw(kind);
-  const txns = readTxnsOf(kind);
+  txns = txns || readTxnsOf(kind);
   const agg = new Map();
   for (const t of txns) {
     const o = agg.get(t.account_id) || { sales: 0, paid: 0, last: '', cnt: 0 };
@@ -147,6 +147,10 @@ financeRouter.post('/finance/handshake', requireRole(...FIN_VIEW), (req, res) =>
 });
 
 financeRouter.use('/finance', (req, res, next) => {
+  // 角色检查必须在加密通道检查之前：无权者一律403，不暴露"端点存在但要握手"
+  if (!FIN_VIEW.includes(req.user?.role)) {
+    return res.status(403).json({ error: '无权访问财务数据' });
+  }
   const s = getSession(req.token);
   if (!s) return res.status(428).json({ error: '加密通道未建立' });
   req.finKey = s.key;
@@ -264,7 +268,8 @@ financeRouter.get('/finance/summary', requireRole(...FIN_VIEW), (req, res) => {
   const P = p => { if (!periodMap.has(p)) periodMap.set(p, { period: p, income: 0, expense: 0, cash_in: 0, cash_out: 0 }); return periodMap.get(p); };
 
   for (const kind of KINDS) {
-    const accounts = readAccounts(kind);
+    const txns = readTxnsOf(kind);              // 解密一次，账户汇总与盈亏统计共用
+    const accounts = readAccounts(kind, txns);
     balances[kind] = accountTotals(accounts);
 
     const m = new Map();
@@ -277,7 +282,7 @@ financeRouter.get('/finance/summary', requireRole(...FIN_VIEW), (req, res) => {
     byBiz[kind] = [...m.values()].map(o => ({ ...o, amount: round2(o.amount), received: round2(o.received), balance: round2(o.balance) }))
       .sort((a, b) => b.balance - a.balance);
 
-    for (const t of readTxnsOf(kind)) {
+    for (const t of txns) {
       const p = periodOf(t.date);
       if (!p) continue;
       const o = P(p);

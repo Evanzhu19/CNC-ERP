@@ -148,6 +148,17 @@ CREATE INDEX IF NOT EXISTS idx_pieces_item ON pieces(item_id);
 CREATE INDEX IF NOT EXISTS idx_pieces_order ON pieces(order_id);
 CREATE INDEX IF NOT EXISTS idx_stages_piece ON piece_stages(piece_id);
 CREATE INDEX IF NOT EXISTS idx_osp_piece ON outsourcing_pieces(piece_id);
+-- 性能：以下都是热点路径（看板/订单列表/板件查询/滞留时钟/财务）反复扫的关联列
+CREATE INDEX IF NOT EXISTS idx_stages_piece_stage ON piece_stages(piece_id, stage);
+CREATE INDEX IF NOT EXISTS idx_osp_batch ON outsourcing_pieces(outsourcing_id);
+CREATE INDEX IF NOT EXISTS idx_osp_piece_open ON outsourcing_pieces(piece_id, returned_date);
+CREATE INDEX IF NOT EXISTS idx_shipments_order ON shipments(order_id);
+CREATE INDEX IF NOT EXISTS idx_shp_shipment ON shipment_pieces(shipment_id);
+CREATE INDEX IF NOT EXISTS idx_attach_order ON attachments(order_id);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id);
+CREATE INDEX IF NOT EXISTS idx_out_status ON outsourcing(status);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 `);
 
 try {
@@ -253,7 +264,10 @@ CREATE TABLE IF NOT EXISTS fin_txns (
   enc TEXT NOT NULL,
   created_by INTEGER REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-);`);
+);
+CREATE INDEX IF NOT EXISTS idx_fin_acct_kind ON fin_accounts(kind);
+CREATE INDEX IF NOT EXISTS idx_fin_txn_acct ON fin_txns(account_id);
+CREATE INDEX IF NOT EXISTS idx_fin_txn_kind ON fin_txns(kind);`);
 // 电镀外发单专用加工要求模板（开单时预填可改，如镀层厚度8μm/10μm）
 db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('out_requirements_plating', '镀硬铬，镀层厚度：8μm，镀层均匀，不得有烧焦、起泡、脱皮、露底；孔内及螺纹按图纸要求防护；回厂前做好防潮防刮包装。')`).run();
 // 外发单（采购订单版）打印抬头与条款默认值，可在系统设置里改

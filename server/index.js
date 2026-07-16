@@ -43,13 +43,17 @@ if (existsSync(distDir)) {
   app.get(/^\/(?!api\/|erp\/|erp$).*/, (req, res) => res.redirect(302, '/erp' + (req.originalUrl === '/' ? '/' : req.originalUrl)));
 }
 
+// 全局错误处理：4xx 才把原文给用户；5xx 一律通用提示，内部细节（SQL语句、表名、
+// 约束名、堆栈）只进服务端日志，绝不回传浏览器。
 app.use((err, req, res, next) => {
-  if (err) {
-    console.error(err);
-    const msg = err.code === 'LIMIT_FILE_SIZE' ? '文件太大（限50MB）' : (err.message || '服务器内部错误');
-    return res.status(err.status || 500).json({ error: msg });
+  if (!err) return next();
+  const status = err.status || (err.code === 'LIMIT_FILE_SIZE' ? 400 : 500);
+  if (status >= 500) {
+    console.error(`[500] ${req.method} ${req.originalUrl} 用户=${req.user?.username || '未登录'}\n`, err);
+    return res.status(500).json({ error: '服务器处理出错了，请重试；若反复出现请联系管理员' });
   }
-  next();
+  const msg = err.code === 'LIMIT_FILE_SIZE' ? '文件太大（图纸限50MB、Excel限30MB）' : (err.message || '请求有误');
+  res.status(status).json({ error: msg });
 });
 
 function backup() {
@@ -109,3 +113,12 @@ function shutdown(sig) {
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+// 兜底：任何漏网的异常都不许把整站带走（车间十几号人在用，一个人的误操作不能停所有人）。
+// 记日志后继续服务；数据一致性由每个接口自己的事务保证，进程存活优先。
+process.on('uncaughtException', (err, origin) => {
+  console.error(`[未捕获异常/${origin}] 服务继续运行，请排查：\n`, err);
+});
+process.on('unhandledRejection', reason => {
+  console.error('[未处理的Promise拒绝] 服务继续运行，请排查：\n', reason);
+});

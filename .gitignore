@@ -6,12 +6,12 @@ web/dist/
 data/
 data-dev/
 
-# 客户文件与临时文件
+# 客户文件与临时文件（注意：tests/ 目录下的正式测试套件不在此列）
 *.pdf
 *.xlsx
 *.log
 测试*.mjs
-test-*.mjs
+/test-*.mjs
 debug-*.mjs
 
 # 系统文件

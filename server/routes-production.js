@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db, today, lastActExpr } from './db.js';
 import { requireRole, canSeePrice, ENTRY_ROLES } from './auth.js';
 import { vehiclesDueSoon } from './routes-finance.js';
+import { idList, exists, str, dateStr, BadRequest, LIMITS } from './validate.js';
 
 export const productionRouter = Router();
 
@@ -18,10 +19,16 @@ function nextNo(table, col, prefix) {
   return `${prefix}-${String(next).padStart(3, '0')}`;
 }
 
+// 所有批量操作的统一入口：在这里做数量/类型闸门，防"全选几万件"打爆SQL变量上限
 function getPieces(ids) {
-  if (!Array.isArray(ids) || ids.length === 0) return [];
-  const ph = ids.map(() => '?').join(',');
-  return db.prepare(`SELECT * FROM pieces WHERE id IN (${ph})`).all(...ids);
+  const v = idList(ids, LIMITS.piece_ids, '板件');
+  if (v.error) {
+    // 空选择沿用调用方的"请至少选择一件"，其余（超量/非法）直接400
+    if (!Array.isArray(ids) || ids.length === 0) return [];
+    throw new BadRequest(v.error);
+  }
+  const ph = v.ids.map(() => '?').join(',');
+  return db.prepare(`SELECT * FROM pieces WHERE id IN (${ph})`).all(...v.ids);
 }
 
 function isShipped(pieceId) {
