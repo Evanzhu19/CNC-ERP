@@ -39,25 +39,11 @@ ok('806001 差异明细里有"台账有PDF没有"的行', r.d.line_checks.some(c
 r = await send('瑞宏rh-PO260806001.pdf', 'reconcile-import');
 ok('806001 拆分单确认后能录入(件数不拦)', r.s === 200 && r.d.ok, JSON.stringify(r.d).slice(0, 80));
 
-console.log('== 4. 串单检测：板件已在别的订单里 → 疑似串单 ==');
-// 806001 已录入，它台账里的图号现在都在系统里。806002 台账里若有图号已属于806001，则报串单。
-// 由于 806002 的3块错板不在806001台账，改用可控构造：手工建一张含特定图号的订单，再核对一张台账里带该图号但PDF没有的单——
-// 真实样本难触发，改为验证SQL：806002核对时，对"台账有PDF没有"的图号，若已在系统别处则带 mislog。
+console.log('== 4. 差异明细：台账有、PDF没有 的行会列出（人工判断拆分/串单）==');
 r = await send('瑞宏rh-PO260806002.pdf', 'reconcile');
 const missingInPdf = r.d.line_checks.filter(c => c.pdf_qty === 0);
-ok('806002 有"台账有PDF没有"的图号(3个错板)', missingInPdf.length >= 3, `实际${missingInPdf.length}`);
-// 这3块错板(la0013467c023等)客户在806001下单——但806001是以"台账"录入的，台账里没这3块，所以系统里查不到，符合预期
-ok('806002 这3块错板系统里查无(因为它们从没被正确录过) → 不误报串单', missingInPdf.every(c => !c.mislog), JSON.stringify(missingInPdf.map(c => c.drawing_no)));
-
-console.log('== 5. 串单检测正向验证（构造：板件确实已录）==');
-// 先手工建一张订单，含图号 CHUAN-DAN-001
-const c = (await fetch(BASE + '/api/customers', { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '串单验证客户' }) }).then(x => x.json()));
-await fetch(BASE + '/api/orders', { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ customer_id: c.id, customer_po: 'EXIST-PO-1', items: [{ name: '板', drawing_no: 'CHUAN-DAN-001', qty: 2 }] }) });
-const exist = await G('/orders?q=CHUAN-DAN-001');
-ok('构造订单已建(含图号CHUAN-DAN-001)', exist.orders.length === 1);
-// mislog 的 SQL 逻辑：核对时台账某图号在系统别处存在则标记。此处用直接查询证明该图号可被系统查到
-const found = await G('/pieces/search?q=CHUAN-DAN-001');
-ok('系统能查到已录的图号(串单检测的数据基础可用)', found.pieces.length === 2);
+ok('806002 列出"台账有PDF没有"的图号(3个错板)', missingInPdf.length >= 3, `实际${missingInPdf.length}`);
+ok('806002 不误报(标准五金件等不会被当串单红字)', r.d.line_checks.every(c => !('mislog' in c)));
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
 process.exit(fail ? 1 : 0);

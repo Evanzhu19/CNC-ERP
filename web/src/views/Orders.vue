@@ -88,10 +88,8 @@
         :title="`这张采购单 ${recResult.ledger.customer_po} 已经录过了（订单 ${recResult.duplicate}），不能重复录入。`" />
       <el-alert v-else-if="recResult.ledger_missing_drawing" type="error" :closable="false" show-icon style="margin-bottom:10px"
         title="台账里有明细行没填图号，请补上图号后再录入。" />
-      <el-alert v-else-if="recResult.suspect_mislog" type="warning" :closable="false" show-icon style="margin-bottom:10px"
-        title="⚠️ 疑似串单：台账里有板件已经录在别的订单里了（见下方红字），可能是这块板记错了PO。请核实——如果确实记错，回台账把它挪到正确的PO；如果是机架拆分导致的正常差异，可直接确认录入。" />
       <el-alert v-else-if="recResult.line_diff" type="warning" :closable="false" show-icon style="margin-bottom:10px"
-        title="PO和客户对上了，但件数/图号与PDF有差异（见下方）。机架拆分的单两边组织方式不同属正常——核对无误后可确认录入。" />
+        title="PO和客户对上了，但件数/图号与PDF有差异（见下方）。机架拆分的单两边组织方式不同属正常，照录即可；如果冒出你不认识、这单根本不该有的板，可能是串单记错了PO，请回台账核对。" />
       <el-alert v-else type="success" :closable="false" show-icon style="margin-bottom:10px"
         title="✓ 完全一致，可以放心录入。" />
 
@@ -126,13 +124,12 @@
         <table class="rec-table">
           <thead><tr><th>图号 / 内容</th><th style="width:90px">PDF</th><th style="width:90px">台账</th><th>说明</th></tr></thead>
           <tbody>
-            <tr v-for="lc in diffLines" :key="lc.drawing_no" :class="lc.mislog ? 'bad' : 'warn'">
+            <tr v-for="lc in diffLines" :key="lc.drawing_no" class="warn">
               <td>{{ lc.drawing_no }}</td>
               <td>{{ lc.pdf_qty }} 件</td>
               <td>{{ lc.ledger_qty }} 件</td>
               <td>
-                <span v-if="lc.mislog" style="color:#f56c6c">⚠️ 疑似串单：已录在订单 {{ lc.mislog.order_no }}（PO {{ lc.mislog.customer_po }}）</span>
-                <span v-else-if="lc.pdf_qty === 0" style="color:#e6a23c">台账有、PDF没有（可能是拆分件）</span>
+                <span v-if="lc.pdf_qty === 0" style="color:#e6a23c">台账有、PDF没有（拆分件 或 记错单）</span>
                 <span v-else style="color:#e6a23c">件数差 {{ Math.abs(lc.pdf_qty - lc.ledger_qty) }}</span>
               </td>
             </tr>

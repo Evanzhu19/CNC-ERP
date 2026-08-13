@@ -821,7 +821,9 @@ async function reconcile(pdfBuffer, xlsBuffer) {
       else pdfExtra.push({ text: row.filter(c => String(c).trim()).slice(0, 5).join(' ｜ '), qty: q });
     }
   }
-  // 台账每个图号 vs PDF；台账有、PDF没有的，查它是否已录在别的订单里（疑似串单）
+  // 台账每个图号 vs PDF。差异只提示不拦——机架拆分导致的差异属正常。
+  // 注：不在这里做"图号已在别订单=串单"的自动判定——标准五金件(连接块/固定块等)
+  // 会在多张单里反复出现，那样会满屏误报。可靠的串单检测靠"批量对账体检"(拿全部客户PDF交叉验)。
   const lineChecks = [];
   const seen = new Set();
   for (const l of led.lines) {
@@ -831,28 +833,17 @@ async function reconcile(pdfBuffer, xlsBuffer) {
     seen.add(k);
     const pq = pdfMap.get(k) || 0;
     const lq = ledMap.get(k);
-    const row = { drawing_no: l.drawing_no, pdf_qty: pq, ledger_qty: lq, ok: pq === lq };
-    if (pq === 0) {
-      // 这个图号台账有、这单PDF里没有 → 查是否已录在别的订单（串单信号）
-      const elsewhere = db.prepare(`
-        SELECT o.order_no, o.customer_po FROM order_items i JOIN orders o ON o.id = i.order_id
-        WHERE UPPER(REPLACE(i.drawing_no, ' ', '')) = ? AND o.status != 'void'
-        ${duplicate ? "AND o.customer_po != ?" : ''} LIMIT 1
-      `).get(...(duplicate ? [k, led.customer_po] : [k]));
-      if (elsewhere) row.mislog = { order_no: elsewhere.order_no, customer_po: elsewhere.customer_po };
-    }
-    lineChecks.push(row);
+    lineChecks.push({ drawing_no: l.drawing_no, pdf_qty: pq, ledger_qty: lq, ok: pq === lq });
   }
 
   const line_diff = lineChecks.some(c => !c.ok) || pdfExtra.length > 0 || !qtyCheck.ok;
-  const suspect_mislog = lineChecks.some(c => c.mislog);
 
   return {
     ok: true,
     identity_ok, duplicate, id_checks: idChecks,
     qty_check: qtyCheck, line_checks: lineChecks, pdf_extra: pdfExtra,
     ledger_missing_drawing: ledgerMissingDrawing,
-    line_diff, suspect_mislog,
+    line_diff,
     // 完全一致（可直接录）；否则前端按 identity/duplicate/line_diff 分级展示
     all_ok: identity_ok && !duplicate && !line_diff && !ledgerMissingDrawing,
     ledger: led, pdf: s
