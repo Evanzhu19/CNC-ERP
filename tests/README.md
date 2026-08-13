@@ -5,6 +5,7 @@
 
 ```bash
 npm test                # 一键跑全套业务+安全（regress → business → chaos → security）
+npm run test:reconcile  # 双证核对：拆分兼容/防重复/串单检测（需 ERP 根目录有真实PDF+Excel样本）
 
 npm run test:regress    # 业务全流程回归 34 项
 npm run test:business   # 业务铁律 45 项（数量守恒/防重复发货/工序顺序…）

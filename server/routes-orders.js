@@ -786,48 +786,77 @@ async function reconcile(pdfBuffer, xlsBuffer) {
   if (hits.length > 1) return { ok: false, error: `台账里有 ${hits.length} 张单都写着 PO=${s.customer_po}，请先在台账里理清后再导入。` };
   const led = hits[0];
 
-  const checks = [];
-  checks.push({ key: 'po', label: '采购单号', pdf: s.customer_po, ledger: led.customer_po, ok: norm(s.customer_po) === norm(led.customer_po) });
+  // === 身份核对（对不上=硬拦，根本不是同一张单）===
+  const idChecks = [];
+  const poOk = norm(s.customer_po) === norm(led.customer_po);
+  idChecks.push({ key: 'po', label: '采购单号', pdf: s.customer_po, ledger: led.customer_po, ok: poOk });
+  const custOk = s.customer ? nameMatch(s.customer, led.customer_name) : false;
+  idChecks.push({ key: 'customer', label: '客户', pdf: s.customer || null, ledger: led.customer_name, ok: custOk, missing: !s.customer });
+  const identity_ok = poOk && custOk;
 
-  if (!s.customer) checks.push({ key: 'customer', label: '客户', pdf: null, ledger: led.customer_name, ok: false, missing: true });
-  else checks.push({ key: 'customer', label: '客户', pdf: s.customer, ledger: led.customer_name, ok: nameMatch(s.customer, led.customer_name) });
+  // === 防重复录入（这张PO已在系统里=硬拦）===
+  const dup = led.customer_po ? db.prepare('SELECT order_no FROM orders WHERE customer_po = ? AND status != ?').get(led.customer_po, 'void') : null;
+  const duplicate = dup ? dup.order_no : null;
 
-  if (s.total_qty == null) checks.push({ key: 'qty', label: '总件数', pdf: null, ledger: led.total_qty, ok: false, missing: true });
-  else checks.push({ key: 'qty', label: '总件数', pdf: s.total_qty, ledger: led.total_qty, ok: s.total_qty === led.total_qty });
-
-  // 逐图号件数核对（金额不参与：台账内部不填金额）
+  // === 件数 / 逐图号（差异只提示，人工判断"拆分"还是"串单"）===
   const ledMap = new Map();
+  let ledgerMissingDrawing = false;
   for (const l of led.lines) {
-    if (!l.drawing_no || !String(l.drawing_no).trim()) {
-      return { ok: false, error: `台账 PO=${led.customer_po} 里有明细行没填图号，无法按图号核对件数，请在台账补上图号后重新上传。` };
-    }
+    if (!l.drawing_no || !String(l.drawing_no).trim()) { ledgerMissingDrawing = true; continue; }
     const k = norm(l.drawing_no);
     ledMap.set(k, (ledMap.get(k) || 0) + Number(l.qty || 0));
   }
+  const qtyCheck = { pdf: s.total_qty, ledger: led.total_qty, ok: s.total_qty != null && s.total_qty === led.total_qty };
+
   const qtyIdx = pdf.guesses.indexOf('qty');
-  if (qtyIdx < 0) return { ok: false, error: 'PDF里没识别出「数量」列，无法按图号核对件数。' };
   const intQty = v => { const m = String(v ?? '').replace(/,/g, '').match(/^\s*(\d+)\s*$/); return m ? parseInt(m[1], 10) : null; };
   const pdfMap = new Map();
   const pdfExtra = [];
-  for (const row of pdf.rows) {
-    const q = intQty(row[qtyIdx]);
-    if (!q) continue;
-    const hit = row.map(c => norm(c)).find(c => c && ledMap.has(c));
-    if (hit) pdfMap.set(hit, (pdfMap.get(hit) || 0) + q);
-    else pdfExtra.push({ text: row.filter(c => String(c).trim()).slice(0, 5).join(' ｜ '), qty: q });
+  if (qtyIdx >= 0) {
+    for (const row of pdf.rows) {
+      const q = intQty(row[qtyIdx]);
+      if (!q) continue;
+      const hit = row.map(c => norm(c)).find(c => c && ledMap.has(c));
+      if (hit) pdfMap.set(hit, (pdfMap.get(hit) || 0) + q);
+      else pdfExtra.push({ text: row.filter(c => String(c).trim()).slice(0, 5).join(' ｜ '), qty: q });
+    }
   }
+  // 台账每个图号 vs PDF；台账有、PDF没有的，查它是否已录在别的订单里（疑似串单）
   const lineChecks = [];
   const seen = new Set();
   for (const l of led.lines) {
+    if (!l.drawing_no) continue;
     const k = norm(l.drawing_no);
     if (seen.has(k)) continue;
     seen.add(k);
     const pq = pdfMap.get(k) || 0;
-    lineChecks.push({ drawing_no: l.drawing_no, pdf_qty: pq, ledger_qty: ledMap.get(k), ok: pq === ledMap.get(k) });
+    const lq = ledMap.get(k);
+    const row = { drawing_no: l.drawing_no, pdf_qty: pq, ledger_qty: lq, ok: pq === lq };
+    if (pq === 0) {
+      // 这个图号台账有、这单PDF里没有 → 查是否已录在别的订单（串单信号）
+      const elsewhere = db.prepare(`
+        SELECT o.order_no, o.customer_po FROM order_items i JOIN orders o ON o.id = i.order_id
+        WHERE UPPER(REPLACE(i.drawing_no, ' ', '')) = ? AND o.status != 'void'
+        ${duplicate ? "AND o.customer_po != ?" : ''} LIMIT 1
+      `).get(...(duplicate ? [k, led.customer_po] : [k]));
+      if (elsewhere) row.mislog = { order_no: elsewhere.order_no, customer_po: elsewhere.customer_po };
+    }
+    lineChecks.push(row);
   }
 
-  const all_ok = checks.every(c => c.ok) && lineChecks.every(c => c.ok) && pdfExtra.length === 0;
-  return { ok: true, all_ok, checks, line_checks: lineChecks, pdf_extra: pdfExtra, ledger: led, pdf: s };
+  const line_diff = lineChecks.some(c => !c.ok) || pdfExtra.length > 0 || !qtyCheck.ok;
+  const suspect_mislog = lineChecks.some(c => c.mislog);
+
+  return {
+    ok: true,
+    identity_ok, duplicate, id_checks: idChecks,
+    qty_check: qtyCheck, line_checks: lineChecks, pdf_extra: pdfExtra,
+    ledger_missing_drawing: ledgerMissingDrawing,
+    line_diff, suspect_mislog,
+    // 完全一致（可直接录）；否则前端按 identity/duplicate/line_diff 分级展示
+    all_ok: identity_ok && !duplicate && !line_diff && !ledgerMissingDrawing,
+    ledger: led, pdf: s
+  };
 }
 
 const reconcileUpload = pdfUpload.fields([{ name: 'pdf', maxCount: 1 }, { name: 'excel', maxCount: 1 }]);
@@ -845,8 +874,7 @@ ordersRouter.post('/orders/reconcile', requireRole(...ENTRY_ROLES), reconcileUpl
       if (r.ledger) delete r.ledger.total_amount;
       if (r.pdf) { delete r.pdf.total_amount; delete r.pdf.doc_total; }
     }
-    const dup = r.ledger.customer_po ? db.prepare('SELECT order_no FROM orders WHERE customer_po = ?').get(r.ledger.customer_po) : null;
-    res.json({ ...r, po_exists: dup ? dup.order_no : null });
+    res.json(r);
   } catch (e) {
     console.error('双证核对失败:', e);
     res.status(422).json({ error: '核对失败：' + (e.message || '文件可能损坏') });
@@ -862,19 +890,22 @@ ordersRouter.post('/orders/reconcile-import', requireRole(...ENTRY_ROLES), recon
   try { r = await reconcile(pdfFile.buffer, xlsFile.buffer); }
   catch (e) { return res.status(422).json({ error: '核对失败：' + e.message }); }
   if (!r.ok) return res.status(422).json({ error: r.error });
-  if (!r.all_ok) {
-    const bad = r.checks.filter(c => !c.ok).map(c => c.label);
-    if (r.line_checks?.some(c => !c.ok) || r.pdf_extra?.length) bad.push('图号件数');
-    return res.status(400).json({ error: `核对未通过（${[...new Set(bad)].join('、')} 对不上），不能录入。请回台账核对修正。` });
+  // 服务端硬性复核（前端骗不过去）：①身份必须对上 ②不能重复录入。
+  // 件数/图号差异不在此拦——那是"拆分兼容"，由用户在核对页确认后放行。
+  if (!r.identity_ok) {
+    const bad = r.id_checks.filter(c => !c.ok).map(c => c.label);
+    return res.status(400).json({ error: `PDF与台账对不上（${bad.join('、')}不一致），不是同一张单，不能录入。` });
+  }
+  if (r.duplicate) {
+    return res.status(400).json({ error: `这张采购单 ${r.ledger.customer_po} 已经录过（订单 ${r.duplicate}），不能重复录入。` });
+  }
+  if (r.ledger_missing_drawing) {
+    return res.status(400).json({ error: '台账里有明细行没填图号，请补上图号后再录入。' });
   }
 
   const led = r.ledger;
   const lines = (led.lines || []).filter(l => Number.isInteger(Number(l.qty)) && Number(l.qty) > 0 && Number(l.qty) <= 2000);
   if (!lines.length) return res.status(400).json({ error: '这张订单没有有效明细行' });
-  if (led.customer_po) {
-    const dup = db.prepare('SELECT order_no FROM orders WHERE customer_po = ?').get(led.customer_po);
-    if (dup) return res.status(400).json({ error: `客户单号 ${led.customer_po} 已经录过（订单 ${dup.order_no}），不能重复录入。` });
-  }
 
   const showPrice = canSeePrice(req);
   db.exec('BEGIN');

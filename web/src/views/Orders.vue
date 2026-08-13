@@ -55,7 +55,7 @@
 
   <el-dialog v-model="reconcileDialog" title="PDF+台账 双证录入" width="720px" top="6vh">
     <el-alert type="info" :closable="false" style="margin-bottom: 14px"
-      title="同时上传：客户的PDF采购单 + Excel台账。系统按PO号在台账里找到对应订单，核对 PO / 客户 / 每个图号的件数（金额不参与核对）。哪个图号件数对不上会红字指出来，对不上不给录。" />
+      title="同时上传：客户PDF采购单 + Excel台账。系统按PO号定位台账订单，核对 PO/客户 是否是同一张单、有没有重复录过。件数/图号的差异会列出来给你看——机架拆分导致的差异照录即可，若提示「疑似串单」说明有板记错了PO，请回台账更正。" />
     <div style="display:flex; gap:16px; margin-bottom:14px;">
       <div style="flex:1">
         <div style="margin-bottom:6px; color:#606266">① 客户PDF采购单</div>
@@ -81,62 +81,85 @@
     </div>
 
     <div v-if="recResult">
-      <el-alert v-if="recResult.po_exists" type="warning" :closable="false" style="margin-bottom:10px"
-        :title="`这张PO已经录过了（订单 ${recResult.po_exists}），不能重复录入。`" />
-      <el-alert v-else-if="recResult.all_ok" type="success" :closable="false" style="margin-bottom:10px"
-        title="✓ 核对通过！PDF与台账完全一致，可以录入。" />
-      <el-alert v-else type="error" :closable="false" style="margin-bottom:10px"
-        title="✗ 核对未通过，这张单不能录入。请回台账核对下面标红的项后重新上传。" />
+      <!-- 顶部结论：三级 -->
+      <el-alert v-if="!recResult.identity_ok" type="error" :closable="false" show-icon style="margin-bottom:10px"
+        title="这两份文件对不上——PO号或客户不一致，不是同一张单，不能录入。请确认 PDF 和台账是同一张 PO。" />
+      <el-alert v-else-if="recResult.duplicate" type="error" :closable="false" show-icon style="margin-bottom:10px"
+        :title="`这张采购单 ${recResult.ledger.customer_po} 已经录过了（订单 ${recResult.duplicate}），不能重复录入。`" />
+      <el-alert v-else-if="recResult.ledger_missing_drawing" type="error" :closable="false" show-icon style="margin-bottom:10px"
+        title="台账里有明细行没填图号，请补上图号后再录入。" />
+      <el-alert v-else-if="recResult.suspect_mislog" type="warning" :closable="false" show-icon style="margin-bottom:10px"
+        title="⚠️ 疑似串单：台账里有板件已经录在别的订单里了（见下方红字），可能是这块板记错了PO。请核实——如果确实记错，回台账把它挪到正确的PO；如果是机架拆分导致的正常差异，可直接确认录入。" />
+      <el-alert v-else-if="recResult.line_diff" type="warning" :closable="false" show-icon style="margin-bottom:10px"
+        title="PO和客户对上了，但件数/图号与PDF有差异（见下方）。机架拆分的单两边组织方式不同属正常——核对无误后可确认录入。" />
+      <el-alert v-else type="success" :closable="false" show-icon style="margin-bottom:10px"
+        title="✓ 完全一致，可以放心录入。" />
 
+      <!-- 身份核对 -->
       <table class="rec-table">
         <thead><tr><th>核对项</th><th>PDF采购单</th><th>Excel台账</th><th style="width:80px">结果</th></tr></thead>
         <tbody>
-          <tr v-for="c in recResult.checks" :key="c.key" :class="{ bad: !c.ok }">
+          <tr v-for="c in recResult.id_checks" :key="c.key" :class="{ bad: !c.ok }">
             <td>{{ c.label }}</td>
-            <td>{{ c.missing ? '（PDF没抽到）' : fmtVal(c) }}</td>
-            <td>{{ fmtLedger(c) }}</td>
+            <td>{{ c.missing ? '（PDF没抽到）' : (c.pdf ?? '') }}</td>
+            <td>{{ c.ledger ?? '' }}</td>
             <td>
               <span v-if="c.ok" style="color:#67c23a">✓ 一致</span>
               <span v-else style="color:#f56c6c">✗ {{ c.missing ? '缺字段' : '不符' }}</span>
             </td>
           </tr>
+          <tr :class="{ bad: !recResult.qty_check.ok }">
+            <td>总件数</td>
+            <td>{{ recResult.qty_check.pdf ?? '（未识别）' }} 件</td>
+            <td>{{ recResult.qty_check.ledger }} 件</td>
+            <td>
+              <span v-if="recResult.qty_check.ok" style="color:#67c23a">✓ 一致</span>
+              <span v-else style="color:#e6a23c">差{{ Math.abs((recResult.qty_check.pdf||0) - recResult.qty_check.ledger) }}件</span>
+            </td>
+          </tr>
         </tbody>
       </table>
 
-      <div v-if="recResult.line_checks" style="margin-top:12px">
-        <div style="margin-bottom:6px; color:#606266; font-size:13px">图号件数逐行核对：</div>
+      <!-- 图号差异明细：只在有差异时展示 -->
+      <div v-if="recResult.line_diff" style="margin-top:12px">
+        <div style="margin-bottom:6px; color:#606266; font-size:13px">图号差异明细（一致的已省略）：</div>
         <table class="rec-table">
-          <thead><tr><th>图号</th><th style="width:110px">PDF采购单</th><th style="width:110px">Excel台账</th><th style="width:140px">结果</th></tr></thead>
+          <thead><tr><th>图号 / 内容</th><th style="width:90px">PDF</th><th style="width:90px">台账</th><th>说明</th></tr></thead>
           <tbody>
-            <tr v-for="lc in recResult.line_checks" :key="lc.drawing_no" :class="{ bad: !lc.ok }">
+            <tr v-for="lc in diffLines" :key="lc.drawing_no" :class="lc.mislog ? 'bad' : 'warn'">
               <td>{{ lc.drawing_no }}</td>
               <td>{{ lc.pdf_qty }} 件</td>
               <td>{{ lc.ledger_qty }} 件</td>
               <td>
-                <span v-if="lc.ok" style="color:#67c23a">✓ 一致</span>
-                <span v-else style="color:#f56c6c">✗ 差{{ Math.abs(lc.pdf_qty - lc.ledger_qty) }}件{{ lc.pdf_qty === 0 ? '（PDF里没这图号）' : '' }}</span>
+                <span v-if="lc.mislog" style="color:#f56c6c">⚠️ 疑似串单：已录在订单 {{ lc.mislog.order_no }}（PO {{ lc.mislog.customer_po }}）</span>
+                <span v-else-if="lc.pdf_qty === 0" style="color:#e6a23c">台账有、PDF没有（可能是拆分件）</span>
+                <span v-else style="color:#e6a23c">件数差 {{ Math.abs(lc.pdf_qty - lc.ledger_qty) }}</span>
               </td>
             </tr>
-            <tr v-for="(ex, i) in recResult.pdf_extra || []" :key="'ex' + i" class="bad">
+            <tr v-for="(ex, i) in recResult.pdf_extra || []" :key="'ex' + i" class="warn">
               <td>{{ ex.text }}</td>
               <td>{{ ex.qty }} 件</td>
               <td>—</td>
-              <td><span style="color:#f56c6c">✗ 台账里没有这行</span></td>
+              <td><span style="color:#e6a23c">PDF有、台账没有（可能整机未拆）</span></td>
             </tr>
           </tbody>
         </table>
       </div>
 
       <div style="margin-top:10px; color:#909399; font-size:13px">
-        台账对应订单：{{ recResult.ledger.customer_name }} / {{ recResult.ledger.lines.length }}行 / 交期{{ recResult.ledger.due_date || '—' }}。录入以台账为准（含图号、材质、外发等内部信息），PDF会自动留档为附件。
+        台账对应订单：{{ recResult.ledger.customer_name }} / {{ recResult.ledger.lines.length }}行 / 交期{{ recResult.ledger.due_date || '—' }}。录入以台账为准（含图号、材质等内部信息），PDF自动留档为附件。
       </div>
     </div>
 
     <template #footer>
       <el-button @click="reconcileDialog = false">关闭</el-button>
-      <el-button v-if="recResult && recResult.all_ok && !recResult.po_exists" type="primary" :loading="importing" @click="doReconcileImport">
-        核对通过，确认录入
-      </el-button>
+      <!-- 身份对上、不重复 就能录：完全一致直接录；有差异需勾选确认 -->
+      <template v-if="recResult && recResult.identity_ok && !recResult.duplicate && !recResult.ledger_missing_drawing">
+        <el-checkbox v-if="recResult.line_diff" v-model="diffConfirmed" style="margin-right:12px">我已核对差异，确认按台账录入</el-checkbox>
+        <el-button type="primary" :loading="importing" :disabled="recResult.line_diff && !diffConfirmed" @click="doReconcileImport">
+          {{ recResult.line_diff ? '确认录入' : '核对通过，录入' }}
+        </el-button>
+      </template>
     </template>
   </el-dialog>
 
@@ -232,12 +255,20 @@ const recXls = ref(null);
 const reconciling = ref(false);
 const recResult = ref(null);
 const recError = ref('');
+const diffConfirmed = ref(false);
+
+// 只展示有差异的图号行（一致的省略），疑似串单排最前
+const diffLines = computed(() => {
+  const lines = (recResult.value?.line_checks || []).filter(c => !c.ok);
+  return lines.sort((a, b) => (b.mislog ? 1 : 0) - (a.mislog ? 1 : 0));
+});
 
 function openReconcile() {
   recPdf.value = null;
   recXls.value = null;
   recResult.value = null;
   recError.value = '';
+  diffConfirmed.value = false;
   reconcileDialog.value = true;
 }
 
@@ -250,16 +281,8 @@ function pickFile(e, which) {
   recError.value = '';
 }
 
-function fmtVal(c) {
-  if (c.key === 'qty') return c.pdf + ' 件';
-  return c.pdf ?? '';
-}
-function fmtLedger(c) {
-  if (c.key === 'qty') return c.ledger + ' 件';
-  return c.ledger ?? '';
-}
-
 async function doReconcile() {
+  diffConfirmed.value = false;
   reconciling.value = true;
   recResult.value = null;
   recError.value = '';
@@ -406,4 +429,5 @@ onMounted(async () => {
 .rec-table th, .rec-table td { border: 1px solid #ebeef5; padding: 8px 12px; text-align: left; }
 .rec-table th { background: #f5f7fa; font-weight: 500; }
 .rec-table tr.bad td { background: #fef0f0; }
+.rec-table tr.warn td { background: #fdf6ec; }
 </style>

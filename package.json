@@ -12,6 +12,7 @@
     "test:business": "node tests/business.mjs",
     "test:chaos": "node tests/chaos.mjs",
     "test:security": "node tests/security.mjs",
+    "test:reconcile": "node tests/reconcile.mjs",
     "test:perf": "node tests/perf.mjs"
   },
   "dependencies": {
