@@ -2,8 +2,7 @@ import axios from 'axios';
 import { ElMessage } from 'element-plus';
 import router from './router.js';
 
-// BASE_URL 由 vite base 决定（/erp/），API 与静态资源同前缀，网关与3000直连通用
-export const API_BASE = import.meta.env.BASE_URL + 'api';
+export const API_BASE = '/api';
 export const api = axios.create({ baseURL: API_BASE });
 
 api.interceptors.request.use(cfg => {

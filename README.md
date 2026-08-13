@@ -65,25 +65,6 @@
 netsh advfirewall firewall add rule name="CNC ERP" dir=in action=allow protocol=TCP localport=3000
 ```
 
-## 统一门户（与刀具库存系统同一个80端口）
-
-ERP 与刀具系统（CNCInventory 仓库）共用一个入口：浏览器打开 `http://CT的IP/`（80端口）
-出现门户首页，选「订单生产 ERP」（`/erp/`）或「刀具库房管理」（`/tools/`）。
-80端口的网关由刀具系统的 frontend 容器承担，通过共享 docker 网络反代到 ERP 容器。
-
-部署/升级步骤（CT 上，两个项目目录各自执行）：
-
-```bash
-docker network create factory-net   # 只需执行一次，已存在会报错，忽略即可
-cd CNC-ERP && docker compose up -d --build
-cd CNCInventory && docker compose up -d --build
-```
-
-说明：
-- ERP 自身的 3000 端口仍可直连（`http://CT的IP:3000` 自动跳到 `/erp/`），网关挂了也不影响 ERP 单独使用
-- 老书签（如 `:3000/orders`）自动 302 跳转到新地址，扫码/收藏不用改
-- 两个系统的数据库完全独立、互不影响（ERP=SQLite，刀具=MySQL），本次融合不动任何数据
-
 ## 部署到服务器（Docker，推荐）
 
 比放办公室电脑上稳：服务器24小时开机，Proxmox 快照/备份一并保护。
@@ -148,13 +129,6 @@ docker compose up -d --no-build
 
 财务账号是**独立板块**：登录后只有「财务台账」和「车辆提醒」两个菜单，
 CNC 订单/生产/外发等一概不可见；服务端同样强制（财务调其他接口一律403），不是只藏菜单。
-
-### 统一登录（与刀具系统）
-
-在 ERP 登录过的浏览器，进刀具系统（`/tools/`）自动免密登录，角色对应：
-总经理→刀具总经理、采购主管→刀具采购主管、CNC主管→刀具CNC主管、财务→刀具总经理（只读报表）。
-文员/跟单/编程/外发默认不开通刀具系统（需要的话让管理员在刀具系统单独建号）。
-刀具系统里已有的同名账号沿用其本地角色，不会被覆盖。反过来（先登刀具再进ERP）不免密，ERP 要单独登录。
 
 ## 自测（改完代码/升级后跑一遍）
 
