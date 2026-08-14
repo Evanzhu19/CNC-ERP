@@ -118,125 +118,79 @@
         </tbody>
       </table>
 
-      <!-- 图号差异明细：按方向分列，每个图号可"查一下"在系统里出现在哪些订单 -->
+      <!-- 差异明细：直接在客户采购单的行上「调整」，说清这一行实际是哪几个图号各几件 -->
       <div v-if="recResult.line_diff" style="margin-top:12px">
-        <!-- ① 会少做：PDF有、台账没有 —— 最危险，重点核 -->
-        <template v-if="(recResult.pdf_not_in_ledger || []).length">
-          <div class="diff-head danger">⚠ 客户PDF上有、台账里没有（台账可能漏了 → 会少做，务必核实）</div>
-          <table class="rec-table">
-            <thead><tr><th>图号 / 内容</th><th style="width:70px">PDF</th><th style="width:80px">台账</th><th style="width:88px">核查</th></tr></thead>
-            <tbody>
-              <tr v-for="(ex, i) in recResult.pdf_not_in_ledger" :key="'p' + i" class="bad">
-                <td>{{ ex.drawing_no || ex.text }}<span v-if="ex.name" style="color:#909399">（{{ ex.name }}）</span></td>
-                <td>{{ ex.qty }} 件</td>
-                <td style="color:#f56c6c">缺</td>
-                <td><el-button v-if="ex.drawing_no" size="small" text type="primary" @click="openLookup(ex.drawing_no)">查一下</el-button></td>
+        <div class="diff-head danger">
+          客户采购单上对不上的行 —— 逐行核对图纸后点「调整」，填清楚这一行实际是哪几个图号、各几件
+        </div>
+        <table class="rec-table">
+          <thead>
+            <tr>
+              <th>客户采购单的图号 / 内容</th>
+              <th style="width:66px">采购单</th>
+              <th style="width:66px">台账</th>
+              <th>核对结果</th>
+              <th style="width:130px">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template v-for="r in poRows" :key="r.key">
+              <tr :class="r.adj ? 'done' : 'bad'">
+                <td>{{ r.label }}<span v-if="r.name" style="color:#909399">（{{ r.name }}）</span></td>
+                <td>{{ r.qty }} 件</td>
+                <td>{{ r.ledger_qty ? r.ledger_qty + ' 件' : '无' }}</td>
+                <td>
+                  <span v-if="!r.adj" style="color:#f56c6c">✗ 未交代，请调整</span>
+                  <span v-else-if="r.adj.qty === r.qty" style="color:#67c23a">✓ 已调整，件数对上</span>
+                  <span v-else style="color:#e6a23c">已调整，但件数 {{ r.qty }}→{{ r.adj.qty }} 不等</span>
+                </td>
+                <td>
+                  <el-button size="small" :type="r.adj ? 'default' : 'primary'" @click="openAdjust(r)">{{ r.adj ? '改' : '调整' }}</el-button>
+                  <el-button v-if="r.adj" size="small" text type="danger" @click="r.adj = null">撤销</el-button>
+                  <el-button v-else-if="r.drawing_no" size="small" text type="primary" @click="openLookup(r.drawing_no)">查一下</el-button>
+                </td>
               </tr>
-            </tbody>
-          </table>
-        </template>
+              <tr v-if="r.adj" class="adj-detail">
+                <td colspan="5">
+                  实际拆成：<b>{{ r.adj.lines.map(l => l.drawing_no + ' ' + l.qty + '件').join('　+　') }}</b>
+                  <span style="color:#909399">　—　{{ ADJ_REASONS[r.adj.reason] }}{{ r.adj.note ? '：' + r.adj.note : '' }}</span>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
 
-        <!-- ② 可能串单/拆分：台账有、PDF没有 -->
-        <template v-if="(recResult.ledger_not_in_pdf || []).length">
-          <div class="diff-head warn">台账里有、客户PDF上没有（机架拆分件属正常；若是本单不该有的板 = 记错单/串单）</div>
+        <!-- 台账这边多出来的：被调整认领掉就变绿，剩下的说明可能是串单 -->
+        <template v-if="ledgerRemain.length">
+          <div class="diff-head warn" style="margin-top:14px">台账上有、客户采购单上没有的图号（被上面的调整认领后转绿）</div>
           <table class="rec-table">
-            <thead><tr><th>图号</th><th style="width:70px">PDF</th><th style="width:80px">台账</th><th style="width:88px">核查</th></tr></thead>
+            <thead><tr><th>台账图号</th><th style="width:80px">台账件数</th><th style="width:110px">已被认领</th><th>状态</th><th style="width:90px">核查</th></tr></thead>
             <tbody>
-              <tr v-for="(l, i) in recResult.ledger_not_in_pdf" :key="'l' + i" class="warn">
+              <tr v-for="l in ledgerRemain" :key="l.drawing_no" :class="l.left === 0 ? 'done' : 'warn'">
                 <td>{{ l.drawing_no }}<span v-if="l.name" style="color:#909399">（{{ l.name }}）</span></td>
-                <td style="color:#e6a23c">无</td>
-                <td>{{ l.ledger_qty }} 件</td>
+                <td>{{ l.qty }} 件</td>
+                <td>{{ l.qty - l.left }} 件</td>
+                <td>
+                  <span v-if="l.left === 0" style="color:#67c23a">✓ 已交代清楚</span>
+                  <span v-else-if="l.left < 0" style="color:#f56c6c">调整里填多了 {{ -l.left }} 件</span>
+                  <span v-else style="color:#e6a23c">还剩 {{ l.left }} 件没交代（拆分件请在上面调整里选它；本单不该有则是记错PO）</span>
+                </td>
                 <td><el-button size="small" text type="primary" @click="openLookup(l.drawing_no)">查一下</el-button></td>
               </tr>
             </tbody>
           </table>
         </template>
 
-        <!-- ③ 同图号数量对不上 -->
-        <template v-if="(recResult.qty_mismatch || []).length">
-          <div class="diff-head warn">同一图号，两边数量对不上</div>
-          <table class="rec-table">
-            <thead><tr><th>图号</th><th style="width:70px">PDF</th><th style="width:80px">台账</th><th style="width:88px">核查</th></tr></thead>
-            <tbody>
-              <tr v-for="(m, i) in recResult.qty_mismatch" :key="'m' + i" class="warn">
-                <td>{{ m.drawing_no }}<span v-if="m.name" style="color:#909399">（{{ m.name }}）</span></td>
-                <td>{{ m.pdf_qty }} 件</td>
-                <td>{{ m.ledger_qty }} 件</td>
-                <td><el-button size="small" text type="primary" @click="openLookup(m.drawing_no)">查一下</el-button></td>
-              </tr>
-            </tbody>
-          </table>
-        </template>
-
-        <!-- ④ 手动登记对应关系：说明差异怎么来的，件数对上就证明没少东西 -->
-        <div class="adj-box">
-          <div class="adj-title">登记对应关系（把差异交代清楚，件数对得上就证明没少东西）</div>
-          <div class="adj-tip">
-            例：客户把一对镜像件并成一个图号发过来 —— 勾左边「MA0112664C007 4件」+ 右边「MA0112664C007 2件」和「MA0177076C001 2件」，
-            选「镜面并单」，登记后就是 <b>4件 → 2件+2件，件数对上</b>，这条说明会永久存进订单。
-          </div>
-
-          <div class="adj-cols">
-            <div class="adj-col">
-              <div class="adj-col-h">客户单这边 <span :class="pdfPoolLeft ? 'left-bad' : 'left-ok'">剩 {{ pdfPoolLeft }} 件未交代</span></div>
-              <div v-if="!pdfPool.length" class="adj-empty">（都交代完了）</div>
-              <el-checkbox v-for="p in pdfPool" :key="p.key" v-model="p.checked" class="adj-item">
-                {{ p.label }} <b>{{ p.qty }}件</b>
-              </el-checkbox>
-            </div>
-            <div class="adj-col">
-              <div class="adj-col-h">台账这边 <span :class="ledgerPoolLeft ? 'left-warn' : 'left-ok'">剩 {{ ledgerPoolLeft }} 件未交代</span></div>
-              <div v-if="!ledgerPool.length" class="adj-empty">（都交代完了）</div>
-              <el-checkbox v-for="l in ledgerPool" :key="l.key" v-model="l.checked" class="adj-item">
-                {{ l.label }} <b>{{ l.qty }}件</b>
-              </el-checkbox>
-            </div>
-          </div>
-
-          <div class="adj-actions">
-            <el-select v-model="adjReason" size="small" style="width:230px" placeholder="选原因">
-              <el-option v-for="(lab, k) in ADJ_REASONS" :key="k" :value="k" :label="lab" />
-            </el-select>
-            <el-input v-model="adjNote" size="small" style="flex:1; min-width:140px" placeholder="备注（选填，如：图纸互为镜面，规格加工要求一致）" maxlength="200" />
-            <span class="adj-bal" v-if="pickedPdfQty || pickedLedgerQty">
-              选中 {{ pickedPdfQty }} 件 → {{ pickedLedgerQty }} 件
-              <b v-if="pickedPdfQty === pickedLedgerQty" style="color:#67c23a">✓对上</b>
-              <b v-else style="color:#f56c6c">✗差{{ Math.abs(pickedPdfQty - pickedLedgerQty) }}件</b>
-            </span>
-            <el-button size="small" type="primary" :disabled="!canAddAdj" @click="addAdjustment">登记这一组</el-button>
-          </div>
-
-          <table v-if="adjRows.length" class="rec-table" style="margin-top:10px">
-            <thead><tr><th>已登记的对应关系</th><th style="width:96px">件数</th><th style="width:150px">原因</th><th style="width:60px"></th></tr></thead>
-            <tbody>
-              <tr v-for="(a, i) in adjRows" :key="'a' + i">
-                <td>
-                  {{ a.pdf_side.map(x => x.drawing_no + ' ' + x.qty + '件').join(' + ') || '（无）' }}
-                  →
-                  {{ a.ledger_side.map(x => x.drawing_no + ' ' + x.qty + '件').join(' + ') || '（无）' }}
-                  <div v-if="a.note" style="color:#909399; font-size:12px">备注：{{ a.note }}</div>
-                </td>
-                <td>
-                  <span v-if="a.pdf_qty === a.ledger_qty" style="color:#67c23a">{{ a.pdf_qty }} ✓对上</span>
-                  <span v-else style="color:#f56c6c">{{ a.pdf_qty }}→{{ a.ledger_qty }} ✗</span>
-                </td>
-                <td style="font-size:12px">{{ ADJ_REASONS[a.reason] }}</td>
-                <td><el-button size="small" text type="danger" @click="removeAdjustment(i)">撤销</el-button></td>
-              </tr>
-            </tbody>
-          </table>
-
-          <div v-if="pdfPoolLeft" class="adj-warn danger">
-            ⚠ 还有 {{ pdfPoolLeft }} 件是客户单上要的、但没交代去向 —— 这部分有<b>少做</b>的风险，请确认台账是不是漏了。
-          </div>
-          <div v-else-if="ledgerPoolLeft" class="adj-warn warn">
-            台账这边还剩 {{ ledgerPoolLeft }} 件没交代（客户单上没有）。是拆分件就登记一下；如果本单根本不该有这些板，可能是记错了PO。
-          </div>
-          <div v-else-if="unbalancedAdj.length" class="adj-warn warn">
-            有 {{ unbalancedAdj.length }} 组登记的件数<b>没配平</b>（上表标 ✗）。件数对不上就说明还有东西没交代清楚，建议撤销重登。
-          </div>
-          <div v-else class="adj-warn ok">✓ 两边差异都已交代清楚，件数对得上。</div>
+        <div v-if="poUnadjustedQty" class="adj-warn danger">
+          ⚠ 还有 {{ poUnadjustedQty }} 件客户要的没交代去向 —— 这部分有<b>少做</b>的风险，请逐行点「调整」核实清楚。
         </div>
+        <div v-else-if="ledgerLeftQty > 0" class="adj-warn warn">
+          台账这边还剩 {{ ledgerLeftQty }} 件没被认领。是拆分件就在对应行的「调整」里把它选上；如果本单根本不该有，可能是记错了PO。
+        </div>
+        <div v-else-if="poUnbalanced.length" class="adj-warn warn">
+          有 {{ poUnbalanced.length }} 行调整后件数与采购单不等。件数对不上就说明还有东西没交代清楚，请复核。
+        </div>
+        <div v-else class="adj-warn ok">✓ 差异全部交代清楚，件数对得上，可以录入。</div>
       </div>
 
       <div style="margin-top:10px; color:#909399; font-size:13px">
@@ -249,14 +203,68 @@
       <!-- 身份对上、不重复 就能录：完全一致直接录；有差异需勾选确认 -->
       <template v-if="recResult && recResult.identity_ok && !recResult.duplicate && !recResult.ledger_missing_drawing">
         <el-checkbox v-if="recResult.line_diff" v-model="diffConfirmed" style="margin-right:12px">
-          {{ pdfPoolLeft ? `还有${pdfPoolLeft}件客户单上的没交代，我确认台账没漏，照录`
-             : unbalancedAdj.length ? `有${unbalancedAdj.length}组登记件数没配平，我确认无误，照录`
-             : '我已核对差异，确认按台账录入' }}
+          {{ poUnadjustedQty ? `还有${poUnadjustedQty}件客户单上的没交代，我确认台账没漏，照录`
+             : poUnbalanced.length ? `有${poUnbalanced.length}行调整后件数与采购单不等，我确认无误，照录`
+             : '我已逐行核对无误，确认录入' }}
         </el-checkbox>
         <el-button type="primary" :loading="importing" :disabled="recResult.line_diff && !diffConfirmed" @click="doReconcileImport">
           {{ recResult.line_diff ? '确认录入' : '核对通过，录入' }}
         </el-button>
       </template>
+    </template>
+  </el-dialog>
+
+  <!-- 调整这一行：客户采购单的一行，实际是哪几个图号各几件 -->
+  <el-dialog v-model="adjDialog" title="调整明细" width="640px" append-to-body>
+    <template v-if="adjTarget">
+      <div class="adj-src">
+        客户采购单这一行：<b>{{ adjTarget.label }}</b> <b style="color:#409eff">{{ adjTarget.qty }} 件</b>
+        <span v-if="adjTarget.name" style="color:#909399">（{{ adjTarget.name }}）</span>
+      </div>
+      <div class="adj-tip">
+        对照图纸核实后，填清楚这 {{ adjTarget.qty }} 件实际是哪几个图号、各几件。
+        例：客户把一对镜像件并成一个图号发过来，这里就填成两行各 {{ Math.floor(adjTarget.qty / 2) }} 件。
+        图号可以从台账里选（括号里是台账还剩几件没被认领），也可以直接手输。
+      </div>
+
+      <table class="rec-table">
+        <thead><tr><th>实际图号</th><th style="width:130px">件数</th><th style="width:56px"></th></tr></thead>
+        <tbody>
+          <tr v-for="(l, i) in adjLines" :key="i">
+            <td>
+              <el-select v-model="l.drawing_no" filterable allow-create default-first-option
+                placeholder="选台账图号，或直接输入" size="small" style="width:100%">
+                <el-option v-for="o in ledgerRemain" :key="o.drawing_no" :value="o.drawing_no"
+                  :label="`${o.drawing_no}（台账剩${o.left}件）`" />
+              </el-select>
+            </td>
+            <td><el-input-number v-model="l.qty" :min="1" :max="2000" size="small" controls-position="right" style="width:100%" /></td>
+            <td><el-button size="small" text type="danger" :disabled="adjLines.length <= 1" @click="adjLines.splice(i, 1)">删</el-button></td>
+          </tr>
+        </tbody>
+      </table>
+      <el-button size="small" text type="primary" style="margin-top:6px" @click="adjLines.push({ drawing_no: '', qty: 1 })">+ 添加一行</el-button>
+
+      <div class="adj-sum">
+        合计 <b>{{ adjLinesQty }}</b> 件 / 采购单 <b>{{ adjTarget.qty }}</b> 件
+        <b v-if="adjLinesQty === adjTarget.qty" style="color:#67c23a">　✓ 对上了</b>
+        <b v-else style="color:#f56c6c">　✗ 差 {{ Math.abs(adjLinesQty - adjTarget.qty) }} 件</b>
+      </div>
+
+      <div style="display:flex; gap:8px; margin-top:12px">
+        <el-select v-model="adjReason" size="small" style="width:240px">
+          <el-option v-for="(lab, k) in ADJ_REASONS" :key="k" :value="k" :label="lab" />
+        </el-select>
+        <el-input v-model="adjNote" size="small" style="flex:1" maxlength="200"
+          placeholder="备注（选填，如：两图互为镜面，规格加工要求一致）" />
+      </div>
+      <div v-if="adjLinesQty !== adjTarget.qty && adjReason !== 'qty_diff'" style="color:#f56c6c; font-size:12px; margin-top:8px">
+        件数对不上就不能确认（否则等于有东西没交代）。确实是件数和客户单不一样，请把原因选成「件数不一致（已与客户确认）」。
+      </div>
+    </template>
+    <template #footer>
+      <el-button @click="adjDialog = false">取消</el-button>
+      <el-button type="primary" :disabled="!canConfirmAdjust" @click="confirmAdjust">确认调整</el-button>
     </template>
   </el-dialog>
 
@@ -403,70 +411,108 @@ const ADJ_REASONS = {
   qty_diff: '件数不一致（已与客户确认）',
   other: '其它（见备注）'
 };
-const pdfPool = ref([]);      // 客户单这边待交代的
-const ledgerPool = ref([]);   // 台账这边待交代的
-const adjRows = ref([]);      // 已登记的组
+// poRows = 客户采购单上对不上的每一行；每行可以被"调整"成实际的若干图号
+// r.adj = { lines:[{drawing_no,qty}], qty, reason, note }
+const poRows = ref([]);
+const ledgerPool = ref([]);   // 台账上客户单没有的图号（供调整时挑选、并显示认领进度）
+const adjDialog = ref(false);
+const adjTarget = ref(null);
+const adjLines = ref([]);
 const adjReason = ref('mirror_merge');
 const adjNote = ref('');
 
-const sumQty = arr => arr.reduce((s, x) => s + x.qty, 0);
-const pdfPoolLeft = computed(() => sumQty(pdfPool.value));
-const ledgerPoolLeft = computed(() => sumQty(ledgerPool.value));
-const pickedPdfQty = computed(() => sumQty(pdfPool.value.filter(x => x.checked)));
-const pickedLedgerQty = computed(() => sumQty(ledgerPool.value.filter(x => x.checked)));
-const canAddAdj = computed(() => (pickedPdfQty.value > 0 || pickedLedgerQty.value > 0) && !!adjReason.value);
-// 已登记但件数不平的组（如 0→24）：池子清空不代表就没问题，这种必须单独喊出来
-const unbalancedAdj = computed(() => adjRows.value.filter(a => a.pdf_qty !== a.ledger_qty));
+const sumQty = arr => arr.reduce((s, x) => s + (Number(x.qty) || 0), 0);
 
-// 核对结果出来后，把两个方向的差异灌进"待交代"池
+// 台账各图号被调整认领了多少
+const claimed = computed(() => {
+  const m = {};
+  for (const r of poRows.value) {
+    if (!r.adj) continue;
+    for (const l of r.adj.lines) m[l.drawing_no] = (m[l.drawing_no] || 0) + Number(l.qty || 0);
+  }
+  return m;
+});
+const ledgerRemain = computed(() =>
+  ledgerPool.value.map(x => ({ ...x, left: x.qty - (claimed.value[x.drawing_no] || 0) }))
+);
+const ledgerLeftQty = computed(() => ledgerRemain.value.reduce((s, x) => s + Math.max(0, x.left), 0));
+const poUnadjustedQty = computed(() => sumQty(poRows.value.filter(r => !r.adj)));
+const poUnbalanced = computed(() => poRows.value.filter(r => r.adj && r.adj.qty !== r.qty));
+
+const adjLinesQty = computed(() => sumQty(adjLines.value));
+const canConfirmAdjust = computed(() => {
+  if (!adjTarget.value || !adjReason.value) return false;
+  if (!adjLines.value.length || adjLines.value.some(l => !String(l.drawing_no || '').trim())) return false;
+  // 件数必须等于采购单那一行；确实要不一样，得明确选「件数不一致」这个原因
+  return adjLinesQty.value === adjTarget.value.qty || adjReason.value === 'qty_diff';
+});
+
+// 核对结果出来后，铺开"客户采购单差异行"和"台账多出来的图号"
 function buildAdjPools(r) {
-  adjRows.value = [];
-  adjNote.value = '';
   let n = 0;
-  pdfPool.value = [
+  poRows.value = [
+    // 同图号数量对不上（如客户 4件 / 台账 2件 —— 典型的镜面并单）
+    ...(r.qty_mismatch || []).map(x => ({
+      key: 'q' + n++, label: x.drawing_no, drawing_no: x.drawing_no, name: x.name,
+      qty: x.pdf_qty, ledger_qty: x.ledger_qty, adj: null
+    })),
+    // 客户单有、台账完全没有（客户用自己的编号、或台账真漏了）
     ...(r.pdf_not_in_ledger || []).map(x => ({
-      key: 'p' + n++, checked: false, qty: x.qty,
-      label: x.drawing_no || x.part_no || x.name || '（未识别）'
-    })),
-    ...(r.qty_mismatch || []).map(x => ({
-      key: 'p' + n++, checked: false, qty: x.pdf_qty, label: x.drawing_no
+      key: 'p' + n++, label: x.drawing_no || x.part_no || x.name || '（未识别）',
+      drawing_no: x.drawing_no || null, name: x.name,
+      qty: x.qty, ledger_qty: 0, adj: null
     }))
   ].filter(x => x.qty > 0);
-  let m = 0;
-  ledgerPool.value = [
-    ...(r.ledger_not_in_pdf || []).map(x => ({
-      key: 'l' + m++, checked: false, qty: x.ledger_qty, label: x.drawing_no
-    })),
-    ...(r.qty_mismatch || []).map(x => ({
-      key: 'l' + m++, checked: false, qty: x.ledger_qty, label: x.drawing_no
-    }))
-  ].filter(x => x.qty > 0);
+
+  // 台账里客户单没有的图号 + 数量对不上那些图号的台账件数，都是可被认领的
+  const agg = new Map();
+  const add = (dno, qty, name) => {
+    if (!dno || !(qty > 0)) return;
+    const cur = agg.get(dno) || { drawing_no: dno, qty: 0, name };
+    cur.qty += qty;
+    agg.set(dno, cur);
+  };
+  for (const x of r.ledger_not_in_pdf || []) add(x.drawing_no, x.ledger_qty, x.name);
+  for (const x of r.qty_mismatch || []) add(x.drawing_no, x.ledger_qty, x.name);
+  ledgerPool.value = [...agg.values()];
 }
 
-function addAdjustment() {
-  const picked = arr => arr.filter(x => x.checked).map(x => ({ drawing_no: x.label, qty: x.qty }));
-  const pdfSide = picked(pdfPool.value);
-  const ledgerSide = picked(ledgerPool.value);
-  adjRows.value.push({
+function openAdjust(row) {
+  adjTarget.value = row;
+  if (row.adj) {
+    adjLines.value = row.adj.lines.map(l => ({ ...l }));
+    adjReason.value = row.adj.reason;
+    adjNote.value = row.adj.note || '';
+  } else {
+    // 预填：同图号台账上有多少就先填多少，剩下的差额由人补第二行
+    const same = ledgerRemain.value.find(x => x.drawing_no === row.drawing_no);
+    adjLines.value = same && same.left > 0
+      ? [{ drawing_no: row.drawing_no, qty: same.left }]
+      : [{ drawing_no: row.drawing_no || '', qty: row.qty }];
+    adjReason.value = row.ledger_qty ? 'mirror_merge' : 'customer_code';
+    adjNote.value = '';
+  }
+  adjDialog.value = true;
+}
+
+function confirmAdjust() {
+  const lines = adjLines.value
+    .map(l => ({ drawing_no: String(l.drawing_no).trim(), qty: Number(l.qty) }))
+    .filter(l => l.drawing_no && l.qty > 0);
+  adjTarget.value.adj = {
+    lines, qty: sumQty(lines),
     reason: adjReason.value,
-    note: adjNote.value.trim() || null,
-    pdf_side: pdfSide, ledger_side: ledgerSide,
-    pdf_qty: sumQty(pdfSide), ledger_qty: sumQty(ledgerSide)
-  });
-  // 登记过的从待交代池里移走
-  pdfPool.value = pdfPool.value.filter(x => !x.checked);
-  ledgerPool.value = ledgerPool.value.filter(x => !x.checked);
-  adjNote.value = '';
+    note: adjNote.value.trim() || null
+  };
+  adjDialog.value = false;
 }
 
-function removeAdjustment(i) {
-  const a = adjRows.value[i];
-  let n = Date.now();
-  // 撤销：把这组的图号退回待交代池
-  pdfPool.value.push(...a.pdf_side.map(x => ({ key: 'p' + n++, checked: false, qty: x.qty, label: x.drawing_no })));
-  ledgerPool.value.push(...a.ledger_side.map(x => ({ key: 'l' + n++, checked: false, qty: x.qty, label: x.drawing_no })));
-  adjRows.value.splice(i, 1);
-}
+// 提交给后端的格式：客户单这一行 → 实际的若干图号
+const adjPayload = () => poRows.value.filter(r => r.adj).map(r => ({
+  reason: r.adj.reason, note: r.adj.note,
+  pdf_side: [{ drawing_no: r.label, qty: r.qty }],
+  ledger_side: r.adj.lines
+}));
 
 async function openLookup(dno) {
   lookupDno.value = dno;
@@ -490,9 +536,8 @@ function openReconcile() {
   recResult.value = null;
   recError.value = '';
   diffConfirmed.value = false;
-  pdfPool.value = [];
+  poRows.value = [];
   ledgerPool.value = [];
-  adjRows.value = [];
   adjNote.value = '';
   reconcileDialog.value = true;
 }
@@ -531,9 +576,10 @@ async function doReconcileImport() {
     const fd = new FormData();
     fd.append('pdf', recPdf.value);
     fd.append('excel', recXls.value);
-    if (adjRows.value.length) fd.append('adjustments', JSON.stringify(adjRows.value));
+    const adj = adjPayload();
+    if (adj.length) fd.append('adjustments', JSON.stringify(adj));
     const { data } = await api.post('/orders/reconcile-import', fd);
-    const adjMsg = adjRows.value.length ? `，${adjRows.value.length}条对账说明已存档` : '';
+    const adjMsg = adj.length ? `，${adj.length}条调整说明已存档` : '';
     ElMessage.success(`已录入订单 ${data.order_no}（${data.pieces}件）${data.customer_created ? '，并新建了客户' : ''}，PDF已留档${adjMsg}`);
     reconcileDialog.value = false;
     load();
@@ -663,21 +709,13 @@ onMounted(async () => {
 .diff-head.danger { color: #f56c6c; background: #fef0f0; }
 .diff-head.warn { color: #b88230; background: #fdf6ec; }
 
-/* 对账调整登记 */
-.adj-box { margin-top: 16px; padding: 12px; border: 1px solid #e4e7ed; border-radius: 6px; background: #fafafa; }
-.adj-title { font-weight: 500; margin-bottom: 6px; }
-.adj-tip { font-size: 12px; color: #909399; line-height: 1.7; margin-bottom: 10px; }
-.adj-cols { display: flex; gap: 12px; }
-.adj-col { flex: 1; background: #fff; border: 1px solid #ebeef5; border-radius: 4px; padding: 8px 10px; }
-.adj-col-h { font-size: 13px; color: #606266; margin-bottom: 6px; }
-.adj-col-h .left-bad { color: #f56c6c; }
-.adj-col-h .left-warn { color: #e6a23c; }
-.adj-col-h .left-ok { color: #67c23a; }
-.adj-empty { color: #c0c4cc; font-size: 13px; padding: 4px 0; }
-.adj-item { display: block; margin: 0 0 2px; height: 26px; }
-.adj-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
-.adj-bal { font-size: 13px; color: #606266; }
-.adj-warn { margin-top: 10px; font-size: 13px; padding: 6px 10px; border-radius: 4px; }
+/* 逐行调整 */
+.rec-table tr.done td { background: #f0f9eb; }
+.rec-table tr.adj-detail td { background: #f0f9eb; font-size: 13px; padding-top: 2px; padding-bottom: 6px; color: #529b2e; }
+.adj-src { font-size: 15px; margin-bottom: 8px; }
+.adj-tip { font-size: 12px; color: #909399; line-height: 1.7; margin-bottom: 12px; }
+.adj-sum { margin-top: 10px; font-size: 14px; }
+.adj-warn { margin-top: 12px; font-size: 13px; padding: 6px 10px; border-radius: 4px; }
 .adj-warn.danger { color: #f56c6c; background: #fef0f0; }
 .adj-warn.warn { color: #b88230; background: #fdf6ec; }
 .adj-warn.ok { color: #529b2e; background: #f0f9eb; }
