@@ -6,6 +6,12 @@ web/dist/
 data/
 data-dev/
 
+# 本机环境覆盖（镜像源、密钥等）：各机器不同，不能进仓库
+# 注意：compose 里的镜像源默认值是给国内网络用的，本地 .env 若被提交会顶掉它
+.env
+.env.*
+!.env.example
+
 # 客户文件与临时文件（注意：tests/ 目录下的正式测试套件不在此列）
 *.pdf
 *.xlsx
