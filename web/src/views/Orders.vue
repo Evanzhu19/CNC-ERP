@@ -55,7 +55,7 @@
 
   <el-dialog v-model="reconcileDialog" title="PDF+台账 双证录入" width="720px" top="6vh">
     <el-alert type="info" :closable="false" style="margin-bottom: 14px"
-      title="同时上传：客户PDF采购单 + Excel台账。系统按PO号定位台账订单，核对 PO/客户 是否是同一张单、有没有重复录过。件数/图号的差异会列出来给你看——机架拆分导致的差异照录即可，若提示「疑似串单」说明有板记错了PO，请回台账更正。" />
+      title="同时上传：客户PDF采购单 + Excel台账。系统按PO号定位台账订单，核对 PO/客户 是否同一张单、有没有重复录过。件数/图号的差异会分「PDF有台账没有（会少做，重点核）」和「台账有PDF没有（拆分件或记错单）」两个方向列出，每个图号可「查一下」它在系统里出现在哪些订单，帮你判断是正常拆分还是记错了PO。" />
     <div style="display:flex; gap:16px; margin-bottom:14px;">
       <div style="flex:1">
         <div style="margin-bottom:6px; color:#606266">① 客户PDF采购单</div>
@@ -89,7 +89,7 @@
       <el-alert v-else-if="recResult.ledger_missing_drawing" type="error" :closable="false" show-icon style="margin-bottom:10px"
         title="台账里有明细行没填图号，请补上图号后再录入。" />
       <el-alert v-else-if="recResult.line_diff" type="warning" :closable="false" show-icon style="margin-bottom:10px"
-        title="PO和客户对上了，但件数/图号与PDF有差异（见下方）。机架拆分的单两边组织方式不同属正常，照录即可；如果冒出你不认识、这单根本不该有的板，可能是串单记错了PO，请回台账核对。" />
+        title="PO和客户对上了，但件数/图号与PDF有差异（见下方，按方向分列）。机架拆分的单两边组织方式不同属正常；重点看红色「客户PDF有、台账没有」——那是台账可能漏了、会导致少做。拿不准的图号点「查一下」看它在系统里的其它订单。" />
       <el-alert v-else type="success" :closable="false" show-icon style="margin-bottom:10px"
         title="✓ 完全一致，可以放心录入。" />
 
@@ -118,29 +118,55 @@
         </tbody>
       </table>
 
-      <!-- 图号差异明细：只在有差异时展示 -->
+      <!-- 图号差异明细：按方向分列，每个图号可"查一下"在系统里出现在哪些订单 -->
       <div v-if="recResult.line_diff" style="margin-top:12px">
-        <div style="margin-bottom:6px; color:#606266; font-size:13px">图号差异明细（一致的已省略）：</div>
-        <table class="rec-table">
-          <thead><tr><th>图号 / 内容</th><th style="width:90px">PDF</th><th style="width:90px">台账</th><th>说明</th></tr></thead>
-          <tbody>
-            <tr v-for="lc in diffLines" :key="lc.drawing_no" class="warn">
-              <td>{{ lc.drawing_no }}</td>
-              <td>{{ lc.pdf_qty }} 件</td>
-              <td>{{ lc.ledger_qty }} 件</td>
-              <td>
-                <span v-if="lc.pdf_qty === 0" style="color:#e6a23c">台账有、PDF没有（拆分件 或 记错单）</span>
-                <span v-else style="color:#e6a23c">件数差 {{ Math.abs(lc.pdf_qty - lc.ledger_qty) }}</span>
-              </td>
-            </tr>
-            <tr v-for="(ex, i) in recResult.pdf_extra || []" :key="'ex' + i" class="warn">
-              <td>{{ ex.text }}</td>
-              <td>{{ ex.qty }} 件</td>
-              <td>—</td>
-              <td><span style="color:#e6a23c">PDF有、台账没有（可能整机未拆）</span></td>
-            </tr>
-          </tbody>
-        </table>
+        <!-- ① 会少做：PDF有、台账没有 —— 最危险，重点核 -->
+        <template v-if="(recResult.pdf_not_in_ledger || []).length">
+          <div class="diff-head danger">⚠ 客户PDF上有、台账里没有（台账可能漏了 → 会少做，务必核实）</div>
+          <table class="rec-table">
+            <thead><tr><th>图号 / 内容</th><th style="width:70px">PDF</th><th style="width:80px">台账</th><th style="width:88px">核查</th></tr></thead>
+            <tbody>
+              <tr v-for="(ex, i) in recResult.pdf_not_in_ledger" :key="'p' + i" class="bad">
+                <td>{{ ex.drawing_no || ex.text }}<span v-if="ex.name" style="color:#909399">（{{ ex.name }}）</span></td>
+                <td>{{ ex.qty }} 件</td>
+                <td style="color:#f56c6c">缺</td>
+                <td><el-button v-if="ex.drawing_no" size="small" text type="primary" @click="openLookup(ex.drawing_no)">查一下</el-button></td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+
+        <!-- ② 可能串单/拆分：台账有、PDF没有 -->
+        <template v-if="(recResult.ledger_not_in_pdf || []).length">
+          <div class="diff-head warn">台账里有、客户PDF上没有（机架拆分件属正常；若是本单不该有的板 = 记错单/串单）</div>
+          <table class="rec-table">
+            <thead><tr><th>图号</th><th style="width:70px">PDF</th><th style="width:80px">台账</th><th style="width:88px">核查</th></tr></thead>
+            <tbody>
+              <tr v-for="(l, i) in recResult.ledger_not_in_pdf" :key="'l' + i" class="warn">
+                <td>{{ l.drawing_no }}<span v-if="l.name" style="color:#909399">（{{ l.name }}）</span></td>
+                <td style="color:#e6a23c">无</td>
+                <td>{{ l.ledger_qty }} 件</td>
+                <td><el-button size="small" text type="primary" @click="openLookup(l.drawing_no)">查一下</el-button></td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+
+        <!-- ③ 同图号数量对不上 -->
+        <template v-if="(recResult.qty_mismatch || []).length">
+          <div class="diff-head warn">同一图号，两边数量对不上</div>
+          <table class="rec-table">
+            <thead><tr><th>图号</th><th style="width:70px">PDF</th><th style="width:80px">台账</th><th style="width:88px">核查</th></tr></thead>
+            <tbody>
+              <tr v-for="(m, i) in recResult.qty_mismatch" :key="'m' + i" class="warn">
+                <td>{{ m.drawing_no }}<span v-if="m.name" style="color:#909399">（{{ m.name }}）</span></td>
+                <td>{{ m.pdf_qty }} 件</td>
+                <td>{{ m.ledger_qty }} 件</td>
+                <td><el-button size="small" text type="primary" @click="openLookup(m.drawing_no)">查一下</el-button></td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
       </div>
 
       <div style="margin-top:10px; color:#909399; font-size:13px">
@@ -158,6 +184,37 @@
         </el-button>
       </template>
     </template>
+  </el-dialog>
+
+  <!-- 图号核查：这个图号在系统里出现在哪些订单 -->
+  <el-dialog v-model="lookupDialog" :title="`图号核查：${lookupDno}`" width="640px" append-to-body>
+    <div v-loading="lookupLoading">
+      <el-alert v-if="lookupError" type="error" :closable="false" :title="lookupError" />
+      <template v-else>
+        <el-alert v-if="!lookupLoading && !lookupRows.length" type="info" :closable="false" show-icon
+          title="系统里还没有这个图号的任何订单记录（首次出现的新件）。" style="margin-bottom:10px" />
+        <template v-else-if="lookupRows.length">
+          <div style="margin-bottom:8px; color:#606266; font-size:13px">这个图号在系统里出现在下面 {{ lookupRows.length }} 张订单：</div>
+          <table class="rec-table">
+            <thead><tr><th>订单号</th><th>客户PO</th><th>客户</th><th style="width:56px">数量</th><th style="width:70px">状态</th><th style="width:100px">下单日</th></tr></thead>
+            <tbody>
+              <tr v-for="(r, i) in lookupRows" :key="i">
+                <td>{{ r.order_no }}</td>
+                <td>{{ r.customer_po || '—' }}</td>
+                <td>{{ r.customer_name || '—' }}</td>
+                <td>{{ r.qty }}</td>
+                <td>{{ statusText(r.status) }}</td>
+                <td>{{ r.order_date || '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+        <div style="margin-top:10px; color:#909399; font-size:12px">
+          判断参考：只出现在同客户/同类历史单 → 多半是正常拆分件；若出现在和本单无关的其它PO里、而本单PDF又没有它 → 很可能记错了PO（串单），请回台账核对。
+        </div>
+      </template>
+    </div>
+    <template #footer><el-button @click="lookupDialog = false">关闭</el-button></template>
   </el-dialog>
 
   <el-dialog v-model="excelDialog" title="Excel台账批量导入" width="960px" top="4vh">
@@ -254,11 +311,29 @@ const recResult = ref(null);
 const recError = ref('');
 const diffConfirmed = ref(false);
 
-// 只展示有差异的图号行（一致的省略），疑似串单排最前
-const diffLines = computed(() => {
-  const lines = (recResult.value?.line_checks || []).filter(c => !c.ok);
-  return lines.sort((a, b) => (b.mislog ? 1 : 0) - (a.mislog ? 1 : 0));
-});
+// 图号核查弹窗：查这个图号在系统里出现在哪些订单
+const lookupDialog = ref(false);
+const lookupDno = ref('');
+const lookupLoading = ref(false);
+const lookupRows = ref([]);
+const lookupError = ref('');
+const statusText = s => ORDER_STATUS[s]?.label || s || '';
+
+async function openLookup(dno) {
+  lookupDno.value = dno;
+  lookupRows.value = [];
+  lookupError.value = '';
+  lookupLoading.value = true;
+  lookupDialog.value = true;
+  try {
+    const { data } = await api.get('/orders/drawing-lookup', { params: { drawing_no: dno } });
+    lookupRows.value = data.matches || [];
+  } catch (err) {
+    lookupError.value = err.response?.data?.error || '查询失败';
+  } finally {
+    lookupLoading.value = false;
+  }
+}
 
 function openReconcile() {
   recPdf.value = null;
@@ -427,4 +502,8 @@ onMounted(async () => {
 .rec-table th { background: #f5f7fa; font-weight: 500; }
 .rec-table tr.bad td { background: #fef0f0; }
 .rec-table tr.warn td { background: #fdf6ec; }
+.rec-table + .diff-head { margin-top: 14px; }
+.diff-head { font-size: 13px; font-weight: 500; margin: 0 0 6px; padding: 4px 8px; border-radius: 4px; }
+.diff-head.danger { color: #f56c6c; background: #fef0f0; }
+.diff-head.warn { color: #b88230; background: #fdf6ec; }
 </style>

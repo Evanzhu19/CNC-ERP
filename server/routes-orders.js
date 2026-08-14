@@ -248,6 +248,30 @@ ordersRouter.get('/pieces/search', (req, res) => {
   res.json({ pieces: result, stall_warn_days: warnDays, stall_alert_days: alertDays });
 });
 
+// 查一下某个图号在系统里出现在哪些订单——用于双证核对时人工判断"拆分件"还是"串单/记错单"。
+// 只返回订单级摘要（单号/PO/客户/数量/状态），不含价格，走ENTRY_ROLES。
+ordersRouter.get('/orders/drawing-lookup', requireRole(...ENTRY_ROLES), (req, res) => {
+  const dno = String(req.query.drawing_no || '').trim();
+  if (!dno) return res.status(400).json({ error: '缺少图号' });
+  const key = norm(dno);
+  if (!key) return res.json({ drawing_no: dno, count: 0, matches: [] });
+  // SQL先粗筛（去空格/制表/换行后大写相等），再用norm()在JS里精确核一遍，避免漏字符
+  const rows = db.prepare(`
+    SELECT o.order_no, o.customer_po, o.order_date, o.status,
+           c.name AS customer_name,
+           i.drawing_no, i.name AS item_name, i.qty
+    FROM order_items i
+    JOIN orders o ON o.id = i.order_id
+    LEFT JOIN customers c ON c.id = o.customer_id
+    WHERE i.drawing_no IS NOT NULL
+      AND upper(replace(replace(replace(i.drawing_no,' ',''),char(9),''),char(10),'')) = ?
+      AND o.status != 'void'
+    ORDER BY o.order_date DESC, o.order_no DESC
+    LIMIT 50
+  `).all(key).filter(r => norm(r.drawing_no) === key);
+  res.json({ drawing_no: dno, count: rows.length, matches: rows });
+});
+
 ordersRouter.get('/orders/:id', (req, res) => {
   const order = db.prepare(`
     SELECT o.*, c.name AS customer_name, u.name AS created_by_name
@@ -809,22 +833,41 @@ async function reconcile(pdfBuffer, xlsBuffer) {
   const qtyCheck = { pdf: s.total_qty, ledger: led.total_qty, ok: s.total_qty != null && s.total_qty === led.total_qty };
 
   const qtyIdx = pdf.guesses.indexOf('qty');
+  const drawIdx = pdf.guesses.indexOf('drawing_no');
+  const nameIdx = pdf.guesses.indexOf('name');
   const intQty = v => { const m = String(v ?? '').replace(/,/g, '').match(/^\s*(\d+)\s*$/); return m ? parseInt(m[1], 10) : null; };
+
+  // 把PDF每一行匹配到台账图号；匹配不上的进 pdf_not_in_ledger
+  //（= 客户PDF有、台账里找不到对应图号 → 台账可能漏了这件 → 会少做，重点核）
   const pdfMap = new Map();
-  const pdfExtra = [];
+  const pdfNotInLedger = [];
   if (qtyIdx >= 0) {
     for (const row of pdf.rows) {
       const q = intQty(row[qtyIdx]);
       if (!q) continue;
       const hit = row.map(c => norm(c)).find(c => c && ledMap.has(c));
-      if (hit) pdfMap.set(hit, (pdfMap.get(hit) || 0) + q);
-      else pdfExtra.push({ text: row.filter(c => String(c).trim()).slice(0, 5).join(' ｜ '), qty: q });
+      if (hit) {
+        pdfMap.set(hit, (pdfMap.get(hit) || 0) + q);
+      } else {
+        const dno = drawIdx >= 0 ? String(row[drawIdx] ?? '').trim() : '';
+        const nm  = nameIdx  >= 0 ? String(row[nameIdx]  ?? '').trim() : '';
+        pdfNotInLedger.push({
+          drawing_no: dno || null,
+          name: nm || null,
+          qty: q,
+          text: row.filter(c => String(c).trim()).slice(0, 5).join(' ｜ ')
+        });
+      }
     }
   }
-  // 台账每个图号 vs PDF。差异只提示不拦——机架拆分导致的差异属正常。
-  // 注：不在这里做"图号已在别订单=串单"的自动判定——标准五金件(连接块/固定块等)
-  // 会在多张单里反复出现，那样会满屏误报。可靠的串单检测靠"批量对账体检"(拿全部客户PDF交叉验)。
+
+  // 台账每个图号 vs PDF，分类：数量对上 / 台账有PDF没有(可能串单或拆分) / 数量对不上。
+  // 差异只提示不拦——机架拆分导致的差异属正常。不在这里自动判"串单"：标准五金件
+  //（连接块/固定块等）会在多张单反复出现，自动判会满屏误报——改为给出图号 + 前端"查一下"
+  // 按钮，让人拿系统里的历史自己判断是拆分件还是记错单。
   const lineChecks = [];
+  const ledgerNotInPdf = [];
+  const qtyMismatch = [];
   const seen = new Set();
   for (const l of led.lines) {
     if (!l.drawing_no) continue;
@@ -833,15 +876,24 @@ async function reconcile(pdfBuffer, xlsBuffer) {
     seen.add(k);
     const pq = pdfMap.get(k) || 0;
     const lq = ledMap.get(k);
-    lineChecks.push({ drawing_no: l.drawing_no, pdf_qty: pq, ledger_qty: lq, ok: pq === lq });
+    const ok = pq === lq;
+    lineChecks.push({ drawing_no: l.drawing_no, name: l.name || null, pdf_qty: pq, ledger_qty: lq, ok });
+    if (ok) continue;
+    if (pq === 0) ledgerNotInPdf.push({ drawing_no: l.drawing_no, name: l.name || null, ledger_qty: lq });
+    else qtyMismatch.push({ drawing_no: l.drawing_no, name: l.name || null, pdf_qty: pq, ledger_qty: lq });
   }
 
-  const line_diff = lineChecks.some(c => !c.ok) || pdfExtra.length > 0 || !qtyCheck.ok;
+  const line_diff = qtyMismatch.length > 0 || ledgerNotInPdf.length > 0 || pdfNotInLedger.length > 0 || !qtyCheck.ok;
 
   return {
     ok: true,
     identity_ok, duplicate, id_checks: idChecks,
-    qty_check: qtyCheck, line_checks: lineChecks, pdf_extra: pdfExtra,
+    qty_check: qtyCheck,
+    line_checks: lineChecks,
+    ledger_not_in_pdf: ledgerNotInPdf,   // 台账有、PDF没有（可能串单／拆分件）
+    pdf_not_in_ledger: pdfNotInLedger,   // PDF有、台账没有（客户要了、台账可能漏 → 会少做，重点核）
+    qty_mismatch: qtyMismatch,           // 数量对不上
+    pdf_extra: pdfNotInLedger,           // 兼容旧字段名
     ledger_missing_drawing: ledgerMissingDrawing,
     line_diff,
     // 完全一致（可直接录）；否则前端按 identity/duplicate/line_diff 分级展示
