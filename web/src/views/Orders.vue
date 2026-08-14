@@ -136,11 +136,21 @@
           <tbody>
             <template v-for="r in poRows" :key="r.key">
               <tr :class="r.adj ? 'done' : 'bad'">
-                <td>{{ r.label }}<span v-if="r.name" style="color:#909399">（{{ r.name }}）</span></td>
+                <td>
+                  {{ r.label }}<span v-if="r.name" style="color:#909399">（{{ r.name }}）</span>
+                  <div v-if="r.part_no && r.part_no !== r.label" style="color:#909399; font-size:12px">客户编号：{{ r.part_no }}</div>
+                </td>
                 <td>{{ r.qty }} 件</td>
                 <td>{{ r.ledger_qty ? r.ledger_qty + ' 件' : '无' }}</td>
                 <td>
-                  <span v-if="!r.adj" style="color:#f56c6c">✗ 未交代，请调整</span>
+                  <template v-if="!r.adj">
+                    <span style="color:#f56c6c">✗ 未交代，请调整</span>
+                    <div v-if="(r.elsewhere || []).length" style="color:#f56c6c; font-size:12px; margin-top:2px">
+                      ⚠ 台账里有这个图号，但挂在
+                      <b v-for="(e, i) in r.elsewhere" :key="e.customer_po">{{ i ? '、' : '' }}{{ e.customer_po }}（{{ e.qty }}件）</b>
+                      下面 —— 很可能是记错了单
+                    </div>
+                  </template>
                   <span v-else-if="r.adj.qty === r.qty" style="color:#67c23a">✓ 已调整，件数对上</span>
                   <span v-else style="color:#e6a23c">已调整，但件数 {{ r.qty }}→{{ r.adj.qty }} 不等</span>
                 </td>
@@ -459,7 +469,8 @@ function buildAdjPools(r) {
     // 客户单有、台账完全没有（客户用自己的编号、或台账真漏了）
     ...(r.pdf_not_in_ledger || []).map(x => ({
       key: 'p' + n++, label: x.drawing_no || x.part_no || x.name || '（未识别）',
-      drawing_no: x.drawing_no || null, name: x.name,
+      drawing_no: x.drawing_no || null, part_no: x.part_no || null, name: x.name,
+      elsewhere: x.elsewhere || [],
       qty: x.qty, ledger_qty: 0, adj: null
     }))
   ].filter(x => x.qty > 0);

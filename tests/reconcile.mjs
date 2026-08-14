@@ -35,7 +35,15 @@ ok('重复录入被后端硬拦(400)', r.s === 400 && /已经录过/.test(r.d.er
 console.log('== 3. 机架拆分：件数/图号有差异但身份对，可确认录入 ==');
 r = await send('瑞宏rh-PO260806001.pdf', 'reconcile');
 ok('806001 身份对、有差异(拆分)', r.d.identity_ok && r.d.line_diff && !r.d.duplicate);
-ok('806001 差异明细里有"台账有PDF没有"的行', r.d.line_checks.some(c => c.pdf_qty === 0));
+// 客户PDF上有、台账这张单里没有的行必须列出来，而且要显示我们认得的图号
+//（客户单把图号放在"规格"列、"物料编号"列放的是他们自编号，早期这里显示成客户编号没法追）
+const miss = r.d.pdf_not_in_ledger || [];
+ok('806001 列出"客户PDF有、台账没有"的行', miss.length > 0, `实际${miss.length}`);
+ok('806001 这些行显示的是我们的图号(不是客户自编号)', miss.every(x => x.drawing_no && /^[A-Za-z]/.test(x.drawing_no)),
+  JSON.stringify(miss.map(x => x.drawing_no)));
+// 台账里其实有、但挂在别的PO下 = 串单，必须点名是哪张单
+ok('806001 指出这些图号在台账里挂到了别的PO下', miss.some(x => (x.elsewhere || []).length > 0),
+  JSON.stringify(miss.map(x => x.drawing_no + '→' + (x.elsewhere || []).map(e => e.customer_po).join(','))));
 r = await send('瑞宏rh-PO260806001.pdf', 'reconcile-import');
 ok('806001 拆分单确认后能录入(件数不拦)', r.s === 200 && r.d.ok, JSON.stringify(r.d).slice(0, 80));
 

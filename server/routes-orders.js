@@ -852,7 +852,42 @@ async function reconcile(pdfBuffer, xlsBuffer) {
   const drawIdx = pdf.guesses.indexOf('drawing_no');
   const nameIdx = pdf.guesses.indexOf('name');
   const partIdx = pdf.guesses.indexOf('part_no');
+  const specIdx = pdf.guesses.indexOf('spec');
   const intQty = v => { const m = String(v ?? '').replace(/,/g, '').match(/^\s*(\d+)\s*$/); return m ? parseInt(m[1], 10) : null; };
+  // 客户单常把我们的图号放在「规格」列，而「物料编号」列放的是客户自编号（3.06.1035 那种）。
+  // 差异行必须显示我们认得出的图号，否则看的人既认不出、也没法点"查一下"去追它跑哪张单了。
+  const looksLikeDrawing = v => {
+    const t = String(v ?? '').trim();
+    return t.length >= 6 && t.length <= 40 && /[A-Za-z]/.test(t) && /\d/.test(t) && !/[一-龥]/.test(t);
+  };
+  const pickDrawing = row => {
+    if (drawIdx >= 0 && String(row[drawIdx] ?? '').trim()) return String(row[drawIdx]).trim();
+    if (specIdx >= 0 && looksLikeDrawing(row[specIdx])) return String(row[specIdx]).trim();
+    const hit = row.find((c, i) => i !== partIdx && i !== qtyIdx && looksLikeDrawing(c));
+    return hit ? String(hit).trim() : '';
+  };
+
+  // 台账全表索引：图号 → 挂在哪几张PO下。用来回答"客户单上这件，台账到底有没有"——
+  // 有、但挂在别的PO下，就是串单记错单（最典型：整机拆板时把板记到了相邻的单号上）。
+  const ledgerIndex = new Map();
+  for (const sh of sheets) for (const o of sh.orders || []) for (const l of o.lines || []) {
+    const k = norm(l.drawing_no);
+    if (!k) continue;
+    const arr = ledgerIndex.get(k) || [];
+    arr.push({ customer_po: o.customer_po || null, name: l.name || null, qty: Number(l.qty || 0) });
+    ledgerIndex.set(k, arr);
+  }
+  const thisPo = norm(led.customer_po);
+  const findElsewhere = dno => {
+    const hits = (ledgerIndex.get(norm(dno)) || []).filter(x => norm(x.customer_po) !== thisPo);
+    const byPo = new Map();
+    for (const h of hits) {
+      const cur = byPo.get(h.customer_po) || { customer_po: h.customer_po, name: h.name, qty: 0 };
+      cur.qty += h.qty;
+      byPo.set(h.customer_po, cur);
+    }
+    return [...byPo.values()].slice(0, 5);
+  };
 
   // 把PDF每一行匹配到台账图号；匹配不上的进 pdf_not_in_ledger
   //（= 客户PDF有、台账里找不到对应图号 → 台账可能漏了这件 → 会少做，重点核）
@@ -866,12 +901,14 @@ async function reconcile(pdfBuffer, xlsBuffer) {
       if (hit) {
         pdfMap.set(hit, (pdfMap.get(hit) || 0) + q);
       } else {
-        const dno = drawIdx >= 0 ? String(row[drawIdx] ?? '').trim() : '';
+        const dno = pickDrawing(row);
         const nm  = nameIdx  >= 0 ? String(row[nameIdx]  ?? '').trim() : '';
         const pno = partIdx  >= 0 ? String(row[partIdx]  ?? '').trim() : '';
         pdfNotInLedger.push({
           drawing_no: dno || null,
           part_no: pno || null,      // 客户自己的编号（如 3.09.0673），图号列空时用它当标识
+          // 台账里其实有这个图号、但挂在别的PO下 → 十有八九是记错单
+          elsewhere: dno ? findElsewhere(dno) : [],
           name: nm || null,
           qty: q,
           text: row.filter(c => String(c).trim()).slice(0, 5).join(' ｜ ')
