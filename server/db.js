@@ -143,6 +143,23 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+-- 对账调整记录：录入时人工登记的"客户单 A×4 → 台账 A×2 + B×2（镜面并单）"这类对应关系。
+-- 客户采购单的图号不总是权威（镜面件并单、客户自己的编号、机架整机不拆），台账按真实图纸拆开写，
+-- 两边对不上是常态。这张表把每一组对应关系连同件数平衡结果永久留痕，事后可查"当时为什么对不上"。
+CREATE TABLE IF NOT EXISTS order_adjustments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  reason TEXT NOT NULL,              -- mirror_merge / frame_split / customer_code / other
+  pdf_side TEXT NOT NULL,            -- JSON: [{drawing_no, qty}]  客户单这边
+  ledger_side TEXT NOT NULL,         -- JSON: [{drawing_no, qty}]  台账这边
+  pdf_qty INTEGER NOT NULL,
+  ledger_qty INTEGER NOT NULL,
+  balanced INTEGER NOT NULL,         -- 1=件数对得上(没少东西) 0=不平
+  note TEXT,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_adj_order ON order_adjustments(order_id);
 CREATE INDEX IF NOT EXISTS idx_items_order ON order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_pieces_item ON pieces(item_id);
 CREATE INDEX IF NOT EXISTS idx_pieces_order ON pieces(order_id);

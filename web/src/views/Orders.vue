@@ -167,6 +167,76 @@
             </tbody>
           </table>
         </template>
+
+        <!-- ④ 手动登记对应关系：说明差异怎么来的，件数对上就证明没少东西 -->
+        <div class="adj-box">
+          <div class="adj-title">登记对应关系（把差异交代清楚，件数对得上就证明没少东西）</div>
+          <div class="adj-tip">
+            例：客户把一对镜像件并成一个图号发过来 —— 勾左边「MA0112664C007 4件」+ 右边「MA0112664C007 2件」和「MA0177076C001 2件」，
+            选「镜面并单」，登记后就是 <b>4件 → 2件+2件，件数对上</b>，这条说明会永久存进订单。
+          </div>
+
+          <div class="adj-cols">
+            <div class="adj-col">
+              <div class="adj-col-h">客户单这边 <span :class="pdfPoolLeft ? 'left-bad' : 'left-ok'">剩 {{ pdfPoolLeft }} 件未交代</span></div>
+              <div v-if="!pdfPool.length" class="adj-empty">（都交代完了）</div>
+              <el-checkbox v-for="p in pdfPool" :key="p.key" v-model="p.checked" class="adj-item">
+                {{ p.label }} <b>{{ p.qty }}件</b>
+              </el-checkbox>
+            </div>
+            <div class="adj-col">
+              <div class="adj-col-h">台账这边 <span :class="ledgerPoolLeft ? 'left-warn' : 'left-ok'">剩 {{ ledgerPoolLeft }} 件未交代</span></div>
+              <div v-if="!ledgerPool.length" class="adj-empty">（都交代完了）</div>
+              <el-checkbox v-for="l in ledgerPool" :key="l.key" v-model="l.checked" class="adj-item">
+                {{ l.label }} <b>{{ l.qty }}件</b>
+              </el-checkbox>
+            </div>
+          </div>
+
+          <div class="adj-actions">
+            <el-select v-model="adjReason" size="small" style="width:230px" placeholder="选原因">
+              <el-option v-for="(lab, k) in ADJ_REASONS" :key="k" :value="k" :label="lab" />
+            </el-select>
+            <el-input v-model="adjNote" size="small" style="flex:1; min-width:140px" placeholder="备注（选填，如：图纸互为镜面，规格加工要求一致）" maxlength="200" />
+            <span class="adj-bal" v-if="pickedPdfQty || pickedLedgerQty">
+              选中 {{ pickedPdfQty }} 件 → {{ pickedLedgerQty }} 件
+              <b v-if="pickedPdfQty === pickedLedgerQty" style="color:#67c23a">✓对上</b>
+              <b v-else style="color:#f56c6c">✗差{{ Math.abs(pickedPdfQty - pickedLedgerQty) }}件</b>
+            </span>
+            <el-button size="small" type="primary" :disabled="!canAddAdj" @click="addAdjustment">登记这一组</el-button>
+          </div>
+
+          <table v-if="adjRows.length" class="rec-table" style="margin-top:10px">
+            <thead><tr><th>已登记的对应关系</th><th style="width:96px">件数</th><th style="width:150px">原因</th><th style="width:60px"></th></tr></thead>
+            <tbody>
+              <tr v-for="(a, i) in adjRows" :key="'a' + i">
+                <td>
+                  {{ a.pdf_side.map(x => x.drawing_no + ' ' + x.qty + '件').join(' + ') || '（无）' }}
+                  →
+                  {{ a.ledger_side.map(x => x.drawing_no + ' ' + x.qty + '件').join(' + ') || '（无）' }}
+                  <div v-if="a.note" style="color:#909399; font-size:12px">备注：{{ a.note }}</div>
+                </td>
+                <td>
+                  <span v-if="a.pdf_qty === a.ledger_qty" style="color:#67c23a">{{ a.pdf_qty }} ✓对上</span>
+                  <span v-else style="color:#f56c6c">{{ a.pdf_qty }}→{{ a.ledger_qty }} ✗</span>
+                </td>
+                <td style="font-size:12px">{{ ADJ_REASONS[a.reason] }}</td>
+                <td><el-button size="small" text type="danger" @click="removeAdjustment(i)">撤销</el-button></td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div v-if="pdfPoolLeft" class="adj-warn danger">
+            ⚠ 还有 {{ pdfPoolLeft }} 件是客户单上要的、但没交代去向 —— 这部分有<b>少做</b>的风险，请确认台账是不是漏了。
+          </div>
+          <div v-else-if="ledgerPoolLeft" class="adj-warn warn">
+            台账这边还剩 {{ ledgerPoolLeft }} 件没交代（客户单上没有）。是拆分件就登记一下；如果本单根本不该有这些板，可能是记错了PO。
+          </div>
+          <div v-else-if="unbalancedAdj.length" class="adj-warn warn">
+            有 {{ unbalancedAdj.length }} 组登记的件数<b>没配平</b>（上表标 ✗）。件数对不上就说明还有东西没交代清楚，建议撤销重登。
+          </div>
+          <div v-else class="adj-warn ok">✓ 两边差异都已交代清楚，件数对得上。</div>
+        </div>
       </div>
 
       <div style="margin-top:10px; color:#909399; font-size:13px">
@@ -178,7 +248,11 @@
       <el-button @click="reconcileDialog = false">关闭</el-button>
       <!-- 身份对上、不重复 就能录：完全一致直接录；有差异需勾选确认 -->
       <template v-if="recResult && recResult.identity_ok && !recResult.duplicate && !recResult.ledger_missing_drawing">
-        <el-checkbox v-if="recResult.line_diff" v-model="diffConfirmed" style="margin-right:12px">我已核对差异，确认按台账录入</el-checkbox>
+        <el-checkbox v-if="recResult.line_diff" v-model="diffConfirmed" style="margin-right:12px">
+          {{ pdfPoolLeft ? `还有${pdfPoolLeft}件客户单上的没交代，我确认台账没漏，照录`
+             : unbalancedAdj.length ? `有${unbalancedAdj.length}组登记件数没配平，我确认无误，照录`
+             : '我已核对差异，确认按台账录入' }}
+        </el-checkbox>
         <el-button type="primary" :loading="importing" :disabled="recResult.line_diff && !diffConfirmed" @click="doReconcileImport">
           {{ recResult.line_diff ? '确认录入' : '核对通过，录入' }}
         </el-button>
@@ -319,6 +393,81 @@ const lookupRows = ref([]);
 const lookupError = ref('');
 const statusText = s => ORDER_STATUS[s]?.label || s || '';
 
+// ===== 对账调整：人工登记"客户单 A×4 → 台账 A×2 + B×2"这类对应关系 =====
+// 客户采购单的图号不总是权威（镜面件并单、客户自己的编号、机架整机不拆），
+// 台账按真实图纸拆开写，两边天然对不上。登记后件数能配平 = 证明没少东西，且永久留痕。
+const ADJ_REASONS = {
+  mirror_merge: '镜面并单（客户合并了镜像件）',
+  frame_split: '机架拆分（客户按整机下单）',
+  customer_code: '客户用了自己的编号',
+  qty_diff: '件数不一致（已与客户确认）',
+  other: '其它（见备注）'
+};
+const pdfPool = ref([]);      // 客户单这边待交代的
+const ledgerPool = ref([]);   // 台账这边待交代的
+const adjRows = ref([]);      // 已登记的组
+const adjReason = ref('mirror_merge');
+const adjNote = ref('');
+
+const sumQty = arr => arr.reduce((s, x) => s + x.qty, 0);
+const pdfPoolLeft = computed(() => sumQty(pdfPool.value));
+const ledgerPoolLeft = computed(() => sumQty(ledgerPool.value));
+const pickedPdfQty = computed(() => sumQty(pdfPool.value.filter(x => x.checked)));
+const pickedLedgerQty = computed(() => sumQty(ledgerPool.value.filter(x => x.checked)));
+const canAddAdj = computed(() => (pickedPdfQty.value > 0 || pickedLedgerQty.value > 0) && !!adjReason.value);
+// 已登记但件数不平的组（如 0→24）：池子清空不代表就没问题，这种必须单独喊出来
+const unbalancedAdj = computed(() => adjRows.value.filter(a => a.pdf_qty !== a.ledger_qty));
+
+// 核对结果出来后，把两个方向的差异灌进"待交代"池
+function buildAdjPools(r) {
+  adjRows.value = [];
+  adjNote.value = '';
+  let n = 0;
+  pdfPool.value = [
+    ...(r.pdf_not_in_ledger || []).map(x => ({
+      key: 'p' + n++, checked: false, qty: x.qty,
+      label: x.drawing_no || x.part_no || x.name || '（未识别）'
+    })),
+    ...(r.qty_mismatch || []).map(x => ({
+      key: 'p' + n++, checked: false, qty: x.pdf_qty, label: x.drawing_no
+    }))
+  ].filter(x => x.qty > 0);
+  let m = 0;
+  ledgerPool.value = [
+    ...(r.ledger_not_in_pdf || []).map(x => ({
+      key: 'l' + m++, checked: false, qty: x.ledger_qty, label: x.drawing_no
+    })),
+    ...(r.qty_mismatch || []).map(x => ({
+      key: 'l' + m++, checked: false, qty: x.ledger_qty, label: x.drawing_no
+    }))
+  ].filter(x => x.qty > 0);
+}
+
+function addAdjustment() {
+  const picked = arr => arr.filter(x => x.checked).map(x => ({ drawing_no: x.label, qty: x.qty }));
+  const pdfSide = picked(pdfPool.value);
+  const ledgerSide = picked(ledgerPool.value);
+  adjRows.value.push({
+    reason: adjReason.value,
+    note: adjNote.value.trim() || null,
+    pdf_side: pdfSide, ledger_side: ledgerSide,
+    pdf_qty: sumQty(pdfSide), ledger_qty: sumQty(ledgerSide)
+  });
+  // 登记过的从待交代池里移走
+  pdfPool.value = pdfPool.value.filter(x => !x.checked);
+  ledgerPool.value = ledgerPool.value.filter(x => !x.checked);
+  adjNote.value = '';
+}
+
+function removeAdjustment(i) {
+  const a = adjRows.value[i];
+  let n = Date.now();
+  // 撤销：把这组的图号退回待交代池
+  pdfPool.value.push(...a.pdf_side.map(x => ({ key: 'p' + n++, checked: false, qty: x.qty, label: x.drawing_no })));
+  ledgerPool.value.push(...a.ledger_side.map(x => ({ key: 'l' + n++, checked: false, qty: x.qty, label: x.drawing_no })));
+  adjRows.value.splice(i, 1);
+}
+
 async function openLookup(dno) {
   lookupDno.value = dno;
   lookupRows.value = [];
@@ -341,6 +490,10 @@ function openReconcile() {
   recResult.value = null;
   recError.value = '';
   diffConfirmed.value = false;
+  pdfPool.value = [];
+  ledgerPool.value = [];
+  adjRows.value = [];
+  adjNote.value = '';
   reconcileDialog.value = true;
 }
 
@@ -364,6 +517,7 @@ async function doReconcile() {
     fd.append('excel', recXls.value);
     const { data } = await api.post('/orders/reconcile', fd);
     recResult.value = data;
+    buildAdjPools(data);
   } catch (err) {
     recError.value = err.response?.data?.error || '核对失败';
   } finally {
@@ -377,8 +531,10 @@ async function doReconcileImport() {
     const fd = new FormData();
     fd.append('pdf', recPdf.value);
     fd.append('excel', recXls.value);
+    if (adjRows.value.length) fd.append('adjustments', JSON.stringify(adjRows.value));
     const { data } = await api.post('/orders/reconcile-import', fd);
-    ElMessage.success(`已录入订单 ${data.order_no}（${data.pieces}件）${data.customer_created ? '，并新建了客户' : ''}，PDF已留档`);
+    const adjMsg = adjRows.value.length ? `，${adjRows.value.length}条对账说明已存档` : '';
+    ElMessage.success(`已录入订单 ${data.order_no}（${data.pieces}件）${data.customer_created ? '，并新建了客户' : ''}，PDF已留档${adjMsg}`);
     reconcileDialog.value = false;
     load();
     router.push(`/orders/${data.order_id}`);
@@ -506,4 +662,23 @@ onMounted(async () => {
 .diff-head { font-size: 13px; font-weight: 500; margin: 0 0 6px; padding: 4px 8px; border-radius: 4px; }
 .diff-head.danger { color: #f56c6c; background: #fef0f0; }
 .diff-head.warn { color: #b88230; background: #fdf6ec; }
+
+/* 对账调整登记 */
+.adj-box { margin-top: 16px; padding: 12px; border: 1px solid #e4e7ed; border-radius: 6px; background: #fafafa; }
+.adj-title { font-weight: 500; margin-bottom: 6px; }
+.adj-tip { font-size: 12px; color: #909399; line-height: 1.7; margin-bottom: 10px; }
+.adj-cols { display: flex; gap: 12px; }
+.adj-col { flex: 1; background: #fff; border: 1px solid #ebeef5; border-radius: 4px; padding: 8px 10px; }
+.adj-col-h { font-size: 13px; color: #606266; margin-bottom: 6px; }
+.adj-col-h .left-bad { color: #f56c6c; }
+.adj-col-h .left-warn { color: #e6a23c; }
+.adj-col-h .left-ok { color: #67c23a; }
+.adj-empty { color: #c0c4cc; font-size: 13px; padding: 4px 0; }
+.adj-item { display: block; margin: 0 0 2px; height: 26px; }
+.adj-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.adj-bal { font-size: 13px; color: #606266; }
+.adj-warn { margin-top: 10px; font-size: 13px; padding: 6px 10px; border-radius: 4px; }
+.adj-warn.danger { color: #f56c6c; background: #fef0f0; }
+.adj-warn.warn { color: #b88230; background: #fdf6ec; }
+.adj-warn.ok { color: #529b2e; background: #f0f9eb; }
 </style>

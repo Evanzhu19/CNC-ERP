@@ -232,6 +232,37 @@
       </el-col>
     </el-row>
 
+    <!-- 对账调整记录：录入时登记的"客户单怎么对应到台账"，事后追溯用 -->
+    <el-card v-if="(detail.adjustments || []).length" shadow="never" style="margin-top: 14px;">
+      <template #header>
+        <b>对账调整记录</b>
+        <span style="color:#909399; font-size:12px; margin-left:8px">
+          录入时登记的客户单与台账的对应关系（客户合并镜像件、用自己编号、按整机下单时，两边图号对不上属正常）
+        </span>
+      </template>
+      <el-table :data="detail.adjustments" size="small" border>
+        <el-table-column label="客户采购单这边" min-width="200">
+          <template #default="{ row }">{{ row.pdf_text || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="台账（实际生产）这边" min-width="220">
+          <template #default="{ row }">{{ row.ledger_text || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="件数" width="120" align="center">
+          <template #default="{ row }">
+            <span v-if="row.balanced" style="color:#67c23a">{{ row.pdf_qty }} 件 ✓对上</span>
+            <span v-else style="color:#f56c6c">{{ row.pdf_qty }} → {{ row.ledger_qty }} ✗</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="reason_label" label="原因" min-width="150" show-overflow-tooltip />
+        <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
+        <el-table-column label="登记" width="150">
+          <template #default="{ row }">
+            <span style="color:#909399; font-size:12px">{{ row.created_by_name || '' }} {{ (row.created_at || '').slice(0, 16) }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
     <el-dialog v-model="timelineDialog" :title="`板件履历：${timelinePiece?.piece_code || ''}`" width="560px">
       <div v-if="timelinePiece" style="color:#606266; margin-bottom: 14px;">
         {{ timelinePiece.part_no || '' }} {{ timelinePiece.drawing_no || '' }} {{ timelinePiece.item_name || '' }}

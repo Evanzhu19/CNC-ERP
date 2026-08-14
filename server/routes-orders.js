@@ -294,6 +294,22 @@ ordersRouter.get('/orders/:id', (req, res) => {
     WHERE s.order_id = ? ORDER BY s.id
   `).all(order.id);
 
+  // 对账调整记录：录入时人工登记的"客户单怎么对应到台账"，服务端拼好文字，前端直接显示
+  const adjustments = db.prepare(`
+    SELECT a.id, a.reason, a.pdf_side, a.ledger_side, a.pdf_qty, a.ledger_qty, a.balanced, a.note,
+           a.created_at, u.name AS created_by_name
+    FROM order_adjustments a LEFT JOIN users u ON u.id = a.created_by
+    WHERE a.order_id = ? ORDER BY a.id
+  `).all(order.id).map(a => {
+    const fmt = j => { try { return JSON.parse(j).map(x => `${x.drawing_no} ${x.qty}件`).join(' + '); } catch { return ''; } };
+    return {
+      id: a.id, reason: a.reason, reason_label: ADJ_REASONS[a.reason] || a.reason,
+      pdf_text: fmt(a.pdf_side), ledger_text: fmt(a.ledger_side),
+      pdf_qty: a.pdf_qty, ledger_qty: a.ledger_qty, balanced: !!a.balanced,
+      note: a.note, created_at: a.created_at, created_by_name: a.created_by_name
+    };
+  });
+
   const showPrice = canSeePrice(req);
   const itemsOut = items.map(it => {
     const row = { ...it };
@@ -306,7 +322,7 @@ ordersRouter.get('/orders/:id', (req, res) => {
     ? items.reduce((s, it) => s + (it.unit_price != null ? it.unit_price * it.qty : 0), 0)
     : undefined;
 
-  res.json({ order: { ...order, ...(showPrice ? { amount } : {}) }, items: itemsOut, attachments, shipments });
+  res.json({ order: { ...order, ...(showPrice ? { amount } : {}) }, items: itemsOut, attachments, shipments, adjustments });
 });
 
 // 订单内板件行：状态判定/关键词筛选/状态筛选/滞留分级全部在服务端算好，前端只渲染
@@ -835,6 +851,7 @@ async function reconcile(pdfBuffer, xlsBuffer) {
   const qtyIdx = pdf.guesses.indexOf('qty');
   const drawIdx = pdf.guesses.indexOf('drawing_no');
   const nameIdx = pdf.guesses.indexOf('name');
+  const partIdx = pdf.guesses.indexOf('part_no');
   const intQty = v => { const m = String(v ?? '').replace(/,/g, '').match(/^\s*(\d+)\s*$/); return m ? parseInt(m[1], 10) : null; };
 
   // 把PDF每一行匹配到台账图号；匹配不上的进 pdf_not_in_ledger
@@ -851,8 +868,10 @@ async function reconcile(pdfBuffer, xlsBuffer) {
       } else {
         const dno = drawIdx >= 0 ? String(row[drawIdx] ?? '').trim() : '';
         const nm  = nameIdx  >= 0 ? String(row[nameIdx]  ?? '').trim() : '';
+        const pno = partIdx  >= 0 ? String(row[partIdx]  ?? '').trim() : '';
         pdfNotInLedger.push({
           drawing_no: dno || null,
+          part_no: pno || null,      // 客户自己的编号（如 3.09.0673），图号列空时用它当标识
           name: nm || null,
           qty: q,
           text: row.filter(c => String(c).trim()).slice(0, 5).join(' ｜ ')
@@ -900,6 +919,55 @@ async function reconcile(pdfBuffer, xlsBuffer) {
     all_ok: identity_ok && !duplicate && !line_diff && !ledgerMissingDrawing,
     ledger: led, pdf: s
   };
+}
+
+// 对账调整原因：只接受这几种，防止前端塞任意文本进库
+export const ADJ_REASONS = {
+  mirror_merge: '镜面并单（客户把一对镜像件合并成一个图号）',
+  frame_split: '机架拆分（客户按整机下单，台账按板拆开）',
+  customer_code: '客户用了自己的编号（与我们的图号不同）',
+  qty_diff: '件数与客户单不一致（已与客户确认）',
+  other: '其它（见备注）'
+};
+
+// 解析前端登记的对账调整。来自客户端，一律按不可信处理：类型、条数、图号长度、件数全部封顶。
+function parseAdjustments(raw) {
+  if (raw == null || raw === '') return [];
+  let arr;
+  try { arr = typeof raw === 'string' ? JSON.parse(raw) : raw; }
+  catch { throw new Error('调整记录格式不正确'); }
+  if (!Array.isArray(arr)) throw new Error('调整记录格式不正确');
+  if (arr.length > 100) throw new Error('调整记录最多 100 条');
+
+  const side = (v, label) => {
+    if (!Array.isArray(v)) throw new Error(`${label}格式不正确`);
+    if (v.length > 50) throw new Error(`${label}一组最多 50 个图号`);
+    const out = [];
+    for (const x of v) {
+      const dno = str(x?.drawing_no, LIMITS.code);
+      const qty = posInt(x?.qty, LIMITS.qty);
+      if (!dno) throw new Error(`${label}有一行没填图号`);
+      if (!qty) throw new Error(`图号 ${dno} 的件数不合法（要 1~${LIMITS.qty} 的整数）`);
+      out.push({ drawing_no: dno, qty });
+    }
+    return out;
+  };
+
+  return arr.map((a, i) => {
+    const reason = String(a?.reason || '');
+    if (!ADJ_REASONS[reason]) throw new Error(`第${i + 1}条调整记录没选原因`);
+    const pdfSide = side(a?.pdf_side, '客户单这边');
+    const ledgerSide = side(a?.ledger_side, '台账这边');
+    if (!pdfSide.length && !ledgerSide.length) throw new Error(`第${i + 1}条调整记录是空的`);
+    const pdfQty = pdfSide.reduce((s, x) => s + x.qty, 0);
+    const ledgerQty = ledgerSide.reduce((s, x) => s + x.qty, 0);
+    return {
+      reason, pdf_side: pdfSide, ledger_side: ledgerSide,
+      pdf_qty: pdfQty, ledger_qty: ledgerQty,
+      balanced: pdfQty === ledgerQty,          // 件数对得上 = 这组没少东西
+      note: str(a?.note, LIMITS.note)
+    };
+  });
 }
 
 const reconcileUpload = pdfUpload.fields([{ name: 'pdf', maxCount: 1 }, { name: 'excel', maxCount: 1 }]);
@@ -950,6 +1018,11 @@ ordersRouter.post('/orders/reconcile-import', requireRole(...ENTRY_ROLES), recon
   const lines = (led.lines || []).filter(l => Number.isInteger(Number(l.qty)) && Number(l.qty) > 0 && Number(l.qty) <= 2000);
   if (!lines.length) return res.status(400).json({ error: '这张订单没有有效明细行' });
 
+  // 人工登记的对账调整（客户单 A×4 → 台账 A×2 + B×2 这类对应关系），前端以JSON字符串随表单传上来
+  let adjustments;
+  try { adjustments = parseAdjustments(req.body?.adjustments); }
+  catch (e) { return res.status(400).json({ error: e.message }); }
+
   const showPrice = canSeePrice(req);
   db.exec('BEGIN');
   let orderId, orderNo, custCreated = false;
@@ -975,6 +1048,15 @@ ordersRouter.post('/orders/reconcile-import', requireRole(...ENTRY_ROLES), recon
         l.material || null, Number(l.qty), price, l.remark || null);
       createPieces(orderId, orderNo, Number(ri.lastInsertRowid), Number(l.qty));
     });
+    // 调整记录和订单同一个事务：要么都在，要么都不在，不会出现"订单录了但没留痕"
+    const insAdj = db.prepare(
+      `INSERT INTO order_adjustments (order_id, reason, pdf_side, ledger_side, pdf_qty, ledger_qty, balanced, note, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const a of adjustments) {
+      insAdj.run(orderId, a.reason, JSON.stringify(a.pdf_side), JSON.stringify(a.ledger_side),
+        a.pdf_qty, a.ledger_qty, a.balanced ? 1 : 0, a.note, req.user.id);
+    }
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
